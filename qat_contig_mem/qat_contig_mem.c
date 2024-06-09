@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * Copyright (C) 2007-2023 Intel Corporation */
+ * Copyright (C) 2007-2024 Intel Corporation */
 
 /* This example contiguous memory allocator is written as a slab allocator.
    The expectation is that allocations passed to it are for
@@ -117,7 +117,7 @@ static int qat_contig_mem_release(struct inode *inp, struct file *fp)
 *
 * @param mem [IN] - pointer to mem structure
 * @param cmd [IN] - ioctl number requested
-* @param arg [IN] - any arg needed by ioctl implementaion
+* @param arg [IN] - any arg needed by ioctl implementation
 *
 * description:
 *   Callback for ioctl operations on the device node. This is our control path.

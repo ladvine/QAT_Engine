@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -50,9 +50,12 @@
 
 # include "cpa.h"
 
-int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn);
+int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn, int qat_svm);
 int qat_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, const BIGNUM *m,
                 int *fallback);
+# ifdef ENABLE_QAT_HW_SM2
+int qat_BN_to_FB_for_sm2(CpaFlatBuffer * fb, const BIGNUM *bn, int qat_svm);
+# endif
 
 # ifdef ENABLE_QAT_HW_ECX
 void qat_ecx_cb(void *pCallbackTag, CpaStatus status,

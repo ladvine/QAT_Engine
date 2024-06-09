@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -156,7 +156,7 @@ typedef struct qat_gcm_ctx_st {
     CpaCySymSessionCtx qat_ctx;
     int init_params_set;
 
-    /* This flag is set to 1 when the session has been initilized */
+    /* This flag is set to 1 when the session has been initialized */
     int is_session_init;
 
     /* QAT Op Params */
@@ -186,6 +186,8 @@ typedef struct qat_gcm_ctx_st {
 
     /* Flag to keep track of key passed */
     int key_set;
+
+    int qat_svm;
 #endif
     int            tls_aad_len;
     int            tag_len;

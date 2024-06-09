@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -258,7 +258,6 @@ static const option_data ecdsa_choices[] = {
     {"ecdsab283", 0, TEST_ECDSA, B_CURVE_283, 0},
     {"ecdsab409", 0, TEST_ECDSA, B_CURVE_409, 0},
     {"ecdsab571", 0, TEST_ECDSA, B_CURVE_571, 0},
-    {"ecdsasm2", 0, TEST_ECDSA, P_CURVE_SM2, 0},
 };
 
 static const option_data aes_choices[] = {
@@ -268,6 +267,9 @@ static const option_data aes_choices[] = {
     {"aes256_cbc_hmac_sha256", 0, TEST_AES256_CBC_HMAC_SHA256, 0, 0},
     {"aes128gcm", 0, TEST_AES128_GCM, 0, 0},
     {"aes256gcm", 0, TEST_AES256_GCM, 0, 0},
+    {"aes128ccm", 0, TEST_AES128_CCM, 0, 0},
+    {"aes192ccm", 0, TEST_AES192_CCM, 0, 0},
+    {"aes256ccm", 0, TEST_AES256_CCM, 0, 0},
 };
 
 static const option_data sha3_choices[] = {
@@ -290,7 +292,7 @@ static const option_data sha2_choices[] = {
 *
 * @param t1 [IN] - cpu time
 * @param t2 [IN] - cpu time
-* @param substract [IN] - subtract flag
+* @param subtract [IN] - subtract flag
 *
 * description:
 *   CPU timing calculation functions.
@@ -492,7 +494,7 @@ static void read_stat_systemctl (int init)
  *   rdtsc (void)
 
  * description:
- *   Timetamp Counter for measuring clock cycles in performance testing.
+ *   Timestamp Counter for measuring clock cycles in performance testing.
  ******************************************************************************/
 static __inline__ unsigned long long rdtsc(void)
 {
@@ -528,6 +530,12 @@ char *test_name(int test)
         return "AES128 GCM";
     case TEST_AES256_GCM:
         return "AES256 GCM";
+    case TEST_AES128_CCM:
+        return "AES128 CCM";
+    case TEST_AES192_CCM:
+        return "AES192 CCM";
+    case TEST_AES256_CCM:
+        return "AES256 CCM";
     case TEST_SM3:
         return "SM3";
     case TEST_DSA:
@@ -562,6 +570,8 @@ char *test_name(int test)
         return "SM4-GCM";
     case TEST_SM4_CCM:
         return "SM4-CCM";
+    case TEST_SM2:
+        return "SM2";
     case TEST_SHA2_224:
         return "SHA2-224";
     case TEST_SHA2_256:
@@ -758,11 +768,13 @@ static void usage(char *program)
     printf("\tecdsab283 ECDSA B283 test\n");
     printf("\tecdsab409 ECDSA B409 test\n");
     printf("\tecdsab571 ECDSA B571 test\n");
-    printf("\tecdsasm2 ECDSA SM2 test\n");
     printf("\tprf     PRF test\n");
     printf("\thkdf    HKDF test\n");
     printf("\taes128gcm   AES128 GCM test\n");
     printf("\taes256gcm   AES256 GCM test\n");
+    printf("\taes128ccm   AES128 CCM test\n");
+    printf("\taes192ccm   AES192 CCM test\n");
+    printf("\taes256ccm   AES256 CCM test\n");
     printf("\tsha3-224    SHA3 224 test\n");
     printf("\tsha3-256    SHA3 256 test\n");
     printf("\tsha3-384    SHA3 384 test\n");
@@ -776,7 +788,7 @@ static void usage(char *program)
     printf("\tsha2-256    SHA2 256 test\n");
     printf("\tsha2-384    SHA2 384 test\n");
     printf("\tsha2-512    SHA2 512 test\n");
-
+    printf("\tsm2         SM2 test\n\n");
     printf("\nIf test algo is not specified, default tests"
            "(RSA, ECDH, ECDSA) will be executed.\n");
 
@@ -829,7 +841,7 @@ static void parse_option(int *index, int argc, char *argv[], int *value)
 * @param index [IN] - index pointer
 * @param argc [IN] - input argument count
 * @param argv [IN] - argument buffer
-* @param str [IN] - char * pointer to strore the string
+* @param str [IN] - char * pointer to store the string
 *
 * description:
 *   user input arguments check
@@ -921,6 +933,9 @@ static void handle_option(int argc, char *argv[], int *index)
     else if (!strcmp(option, "chachapoly")) {
         test_alg = TEST_CHACHA20_POLY1305;
         test_size = 4096;
+    } else if (!strcmp(option, "sm2")){
+        test_alg = TEST_SM2;
+        curve = P_CURVE_SM2;
     } else if (!strncmp(option, "rsa", strlen("rsa"))) {
         size = sizeof(rsa_choices) / sizeof(option_data);
         for (i = 0; i < size; i++)
@@ -1516,7 +1531,7 @@ int main(int argc, char *argv[])
         printf("Engine disabled! using software implementation\n");
 
     printf("\nQAT Engine Test Application\n");
-    printf("\n\tCopyright (C) 2021-2023 Intel Corporation\n");
+    printf("\n\tCopyright (C) 2021-2024 Intel Corporation\n");
     printf("\nTest Parameters:\n\n");
     printf("\tTest Type:            %s\n",
            enable_perf ? "Performance" : "Functional");

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,7 +49,7 @@
 
 #include <stdio.h>
 #include <string.h>
-# include <openssl/ossl_typ.h>
+#include <openssl/ossl_typ.h>
 #include <openssl/rsa.h>
 #include <openssl/err.h>
 #include <openssl/dh.h>
@@ -59,7 +59,7 @@
 
 #define QAT_FIPS_PROVIDER_NAME "QAT Provider FIPS"
 #define QAT_FIPS_PROVIDER_ID "qatprovider"
-#define QAT_FIPS_PROVIDER_VERSION "QAT Engine v1.2.0"
+#define QAT_FIPS_PROVIDER_VERSION "QAT Engine v1.3.1"
 #ifdef QAT_HW
 #define QAT_HW_DRIVER_version "QAT20.l.1.0.40-00004"
 #endif

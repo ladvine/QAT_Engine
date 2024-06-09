@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -750,14 +750,28 @@ void tests_run(TEST_PARAMS *args, int id)
     case TEST_ECDSA:            /* ECDSA test application */
         tests_run_ecdsa(args);
         break;
+#ifndef OPENSSL_NO_SM2_SM3
+    case TEST_SM2:
+        tests_run_sm2(args);  /* SM2 test application */
+        break;
     case TEST_SM3:            /* SM3 test application */
         tests_run_sm3(args);
         break;
+#endif
     case TEST_AES128_GCM:
         tests_run_aes128_gcm(args);
         break;
     case TEST_AES256_GCM:
         tests_run_aes256_gcm(args);
+        break;
+    case TEST_AES128_CCM:
+        tests_run_aes128_ccm(args);
+        break;
+    case TEST_AES192_CCM:
+        tests_run_aes192_ccm(args);
+        break;
+    case TEST_AES256_CCM:
+        tests_run_aes256_ccm(args);
         break;
     case TEST_ECX:              /* X25519 & X448 test application */
         tests_run_ecx(args);
@@ -809,7 +823,7 @@ void tests_run(TEST_PARAMS *args, int id)
         break;
     case TEST_CHACHA20_POLY1305:
         tests_run_chacha20_poly1305(args);
-        break; /* ENABLE_QAT_HW_SM4_CBC */
+        break;
 #endif
 #ifdef QAT_SW
     /* SHA2 tests */

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -59,6 +59,9 @@
 # include "qat_evp.h"
 # include "qat_sw_request.h"
 # include "qat_sw_ec.h"
+# if defined(QAT_OPENSSL_3) || defined(QAT_OPENSSL_PROVIDER)
+#  include "qat_prov_sign_sm2.h"
+# endif
 
 /* Crypto_mb includes */
 # include "crypto_mb/ec_sm2.h"
@@ -71,50 +74,13 @@
 
 
 # ifdef ENABLE_QAT_SW_SM2
-#  ifdef QAT_OPENSSL_3
 
-# define OSSL_MAX_NAME_SIZE           50 /* Algorithm name */
-# define OSSL_MAX_PROPQUERY_SIZE     256 /* Property query strings */
-# define OSSL_MAX_ALGORITHM_ID_SIZE  256 /* AlgorithmIdentifier DER */
+int qat_sm2_compute_z_digest(uint8_t *out,
+                              const EVP_MD *digest,
+                              const uint8_t *id,
+                              const size_t id_len,
+                              const EC_KEY *key);
 
-/*
- * What's passed as an actual key is defined by the KEYMGMT interface.
- * We happen to know that our KEYMGMT simply passes EC structures, so
- * we use that here too.
- */
-typedef struct {
-    OSSL_LIB_CTX *libctx;
-    char *propq;
-    EC_KEY *ec;
-
-    /*
-     * Flag to termine if the 'z' digest needs to be computed and fed to the
-     * hash function.
-     * This flag should be set on initialization and the compuation should
-     * be performed only once, on first update.
-     */
-    unsigned int flag_compute_z_digest : 1;
-
-    char mdname[OSSL_MAX_NAME_SIZE];
-
-    /* The Algorithm Identifier of the combined signature algorithm */
-    unsigned char aid_buf[OSSL_MAX_ALGORITHM_ID_SIZE];
-    unsigned char *aid;
-    size_t  aid_len;
-
-    /* main digest */
-    EVP_MD *md;
-    EVP_MD_CTX *mdctx;
-    size_t mdsize;
-
-    /* SM2 ID used for calculating the Z value */
-    unsigned char *id;
-    size_t id_len;
-
-    const unsigned char *tbs;
-    size_t tbs_len;
-} QAT_PROV_SM2_CTX;
-#  endif
 #  ifdef QAT_OPENSSL_PROVIDER
 int mb_ecdsa_sm2_sign(QAT_PROV_SM2_CTX *ctx,
                              unsigned char *sig, size_t *siglen,
@@ -124,12 +90,8 @@ int mb_ecdsa_sm2_verify(QAT_PROV_SM2_CTX *ctx,
                                const unsigned char *sig, size_t siglen,
                                const unsigned char *tbs,
                                size_t tbslen);
+
 #  else
-int ossl_sm2_compute_z_digest(uint8_t *out,
-                              const EVP_MD *digest,
-                              const uint8_t *id,
-                              const size_t id_len,
-                              const EC_KEY *key);
 int mb_ecdsa_sm2_sign(EVP_MD_CTX *ctx,
                              unsigned char *sig, size_t *siglen,
                              const unsigned char *tbs,
@@ -139,6 +101,16 @@ int mb_ecdsa_sm2_verify(EVP_MD_CTX *ctx,
                                const unsigned char *tbs,
                                size_t tbslen);
 #  endif /* QAT_OPENSSL_PROVIDER */
+
+#ifndef QAT_OPENSSL_PROVIDER
+# ifdef ENABLE_QAT_SW_SM2
+int mb_sm2_init(EVP_PKEY_CTX *ctx);
+int mb_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2);
+void mb_sm2_cleanup(EVP_PKEY_CTX *ctx);
+int mb_digest_custom(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx);
+# endif
+#endif
+
 # endif /* ENABLE_QAT_SW_SM2 */
 
 #endif /* QAT_SW_SM2_H */

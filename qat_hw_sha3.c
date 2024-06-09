@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,12 +49,6 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
-#ifdef USE_QAT_CONTIG_MEM
-# include "qae_mem_utils.h"
-#endif
-#ifdef USE_USDM_MEM
-# include "qat_hw_usdm_inf.h"
-#endif
 #include "e_qat.h"
 #include "qat_utils.h"
 #include "qat_hw_callback.h"
@@ -119,6 +113,24 @@ static inline const EVP_MD *qat_sha3_sw_impl(int nid)
     }
 }
 
+#if defined(ENABLE_QAT_HW_SHA3) && !defined(QAT_OPENSSL_PROVIDER)
+int qat_sha3_md_methods(EVP_MD *c, int blocksize, int statesize)
+{
+    int res = 1;
+    res &= EVP_MD_meth_set_result_size(c, statesize);
+    res &= EVP_MD_meth_set_input_blocksize(c,blocksize);
+    res &= EVP_MD_meth_set_app_datasize(c,
+                    sizeof(EVP_MD*) + sizeof(qat_sha3_ctx) + sizeof(SHA3_CTX));
+    res &= EVP_MD_meth_set_flags(c, EVP_MD_CTX_FLAG_REUSE);
+    res &= EVP_MD_meth_set_init(c, qat_sha3_init);
+    res &= EVP_MD_meth_set_update(c, qat_sha3_update);
+    res &= EVP_MD_meth_set_final(c, qat_sha3_final);
+    res &= EVP_MD_meth_set_copy(c, qat_sha3_copy);
+    res &= EVP_MD_meth_set_ctrl(c, qat_sha3_ctrl);
+    return res;
+}
+#endif
+
 const EVP_MD *qat_create_sha3_meth(int nid , int key_type)
 {
 #if defined(ENABLE_QAT_HW_SHA3) && !defined(QAT_OPENSSL_PROVIDER)
@@ -126,38 +138,28 @@ const EVP_MD *qat_create_sha3_meth(int nid , int key_type)
     int res = 1;
     int blocksize,statesize = 0;
 
+    if ((c = EVP_MD_meth_new(nid,key_type)) == NULL) {
+        WARN("Failed to allocate digest methods for nid %d\n", nid);
+        return NULL;
+    }
+
+    blocksize = qat_get_sha3_block_size(nid);
+    if (!blocksize){
+        WARN("Failed to get block size for nid %d\n", nid);
+        EVP_MD_meth_free(c);
+        return NULL;
+    }
+
+    statesize = qat_get_sha3_state_size(nid);
+    if (!statesize){
+        WARN("Failed to state size for nid %d\n", nid);
+        EVP_MD_meth_free(c);
+        return NULL;
+    }
+
     if (qat_hw_offload &&
         (qat_hw_algo_enable_mask & ALGO_ENABLE_MASK_SHA3)) {
-        if ((c = EVP_MD_meth_new(nid,key_type)) == NULL) {
-            WARN("Failed to allocate digest methods for nid %d\n", nid);
-            return NULL;
-        }
-
-        blocksize = qat_get_sha3_block_size(nid);
-        if (!blocksize){
-            WARN("Failed to get block size for nid %d\n", nid);
-            EVP_MD_meth_free(c);
-            return NULL;
-        }
-
-        statesize = qat_get_sha3_state_size(nid);
-        if (!statesize){
-            WARN("Failed to state size for nid %d\n", nid);
-            EVP_MD_meth_free(c);
-            return NULL;
-        }
-
-        res &= EVP_MD_meth_set_result_size(c, statesize);
-        res &= EVP_MD_meth_set_input_blocksize(c,blocksize);
-        res &= EVP_MD_meth_set_app_datasize(c,
-			sizeof(EVP_MD*) + sizeof(qat_sha3_ctx) + sizeof(SHA3_CTX));
-        res &= EVP_MD_meth_set_flags(c, EVP_MD_CTX_FLAG_REUSE);
-        res &= EVP_MD_meth_set_init(c, qat_sha3_init);
-        res &= EVP_MD_meth_set_update(c, qat_sha3_update);
-        res &= EVP_MD_meth_set_final(c, qat_sha3_final);
-        res &= EVP_MD_meth_set_copy(c, qat_sha3_copy);
-        res &= EVP_MD_meth_set_ctrl(c, qat_sha3_ctrl);
-
+        res = qat_sha3_md_methods(c, blocksize, statesize);
         if (0 == res) {
             WARN("Failed to set cipher methods for nid %d\n", nid);
             EVP_MD_meth_free(c);
@@ -169,9 +171,20 @@ const EVP_MD *qat_create_sha3_meth(int nid , int key_type)
         return c;
     } else {
         qat_hw_sha_offload = 0;
+# ifdef QAT_OPENSSL_3
+        qat_openssl3_sha_fallback = 1;
+	res = qat_sha3_md_methods(c, blocksize, statesize);
+        if (0 == res) {
+            WARN("Failed to set cipher methods for nid %d\n", nid);
+            EVP_MD_meth_free(c);
+            return NULL;
+        }
+	return c;
+# else
         DEBUG("QAT HW SHA3 is disabled, using OpenSSL SW\n");
         EVP_MD_meth_free(c);
         return qat_sha3_sw_impl(nid);
+# endif
     }
 #else
     qat_hw_sha_offload = 0;
@@ -325,6 +338,7 @@ static int qat_sha3_session_data_init(EVP_MD_CTX *ctx,
     if (pOpData == NULL) {
         WARN("memory allocation failed for symopData struct.\n");
         QATerr(QAT_F_QAT_SHA3_SESSION_DATA_INIT, ERR_R_MALLOC_FAILURE);
+        OPENSSL_free(session_data);
         return 0;
     }
 
@@ -356,10 +370,21 @@ static int qat_sha3_init(EVP_MD_CTX *ctx)
 {
 
     qat_sha3_ctx* sha3_ctx = NULL;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    int sts = 0;
+#endif
+
     if (NULL == ctx) {
         WARN("ctx is NULL\n");
         return 0;
     }
+
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (qat_openssl3_sha_fallback == 1) {
+        DEBUG("- Switched to software mode\n");
+        goto use_sw_method;
+    }
+#endif
 
     DEBUG("QAT HW SHA3 init Started ctx %p\n", ctx);
     /* Initialise a QAT session and set the hash*/
@@ -402,6 +427,13 @@ static int qat_sha3_init(EVP_MD_CTX *ctx)
 #endif
 
     return 1;
+
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+use_sw_method:
+    sts = EVP_MD_meth_get_init(GET_SW_SHA3_DIGEST(ctx))(ctx);
+    DEBUG("SW Finished %p\n", ctx);
+    return sts;
+#endif
 }
 
 /******************************************************************************
@@ -496,17 +528,17 @@ static int qat_sha3_cleanup(EVP_MD_CTX *ctx)
     }
 
     if (sha3_ctx->session_init) {
-        if (sha3_ctx->pSrcBufferList.pPrivateMetaData) {
-            qaeCryptoMemFreeNonZero(sha3_ctx->pSrcBufferList.pPrivateMetaData);
-            sha3_ctx->pSrcBufferList.pPrivateMetaData = NULL;
-        }
+        QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->pSrcBufferList.pPrivateMetaData, sha3_ctx->qat_svm);
+        sha3_ctx->pSrcBufferList.pPrivateMetaData = NULL;
 
         if (is_instance_available(sha3_ctx->inst_num)) {
             /* Wait for in-flight requests before removing session */
             CpaBoolean sessionInUse = CPA_FALSE;
-            do {
-                cpaCySymSessionInUse(sha3_ctx->session_ctx, &sessionInUse);
-            } while (sessionInUse);
+            if (sha3_ctx->session_ctx != NULL) {
+                do {
+                    cpaCySymSessionInUse(sha3_ctx->session_ctx, &sessionInUse);
+                } while (sessionInUse);
+            }
 
             if ((status = cpaCySymRemoveSession(qat_instance_handles[sha3_ctx->inst_num], sha3_ctx->session_ctx))
                                                 != CPA_STATUS_SUCCESS) {
@@ -517,7 +549,7 @@ static int qat_sha3_cleanup(EVP_MD_CTX *ctx)
                  */
             }
 
-            qaeCryptoMemFreeNonZero(sha3_ctx->session_ctx);
+            QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->session_ctx, sha3_ctx->qat_svm);
             sha3_ctx->session_ctx = NULL;
 	}
         sha3_ctx->session_init = 0;
@@ -601,13 +633,15 @@ static int qat_sha3_setup_param(qat_sha3_ctx *sha3_ctx)
     }
 
     /* Allocate instance */
-    sha3_ctx->inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_SYM);
+    sha3_ctx->inst_num = get_instance(QAT_INSTANCE_SYM, QAT_INSTANCE_ANY);
     if (sha3_ctx->inst_num == QAT_INVALID_INSTANCE) {
         WARN("Failed to get a QAT instance.\n");
         QATerr(QAT_F_QAT_SHA3_SETUP_PARAM, ERR_R_INTERNAL_ERROR);
         return 0;
     }
+    sha3_ctx->qat_svm = !qat_instance_details[sha3_ctx->inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
 
+    DEBUG("inst_num = %d Size of session ctx = %d inst mem type = %d \n", sha3_ctx->inst_num, sctx_size, sha3_ctx->qat_svm);
     /* Determine size of session context to allocate */
     status = cpaCySymSessionCtxGetSize(qat_instance_handles[sha3_ctx->inst_num],
                                        sha3_ctx->session_data,
@@ -620,7 +654,7 @@ static int qat_sha3_setup_param(qat_sha3_ctx *sha3_ctx)
     DEBUG("inst_num = %d, Size of session ctx = %d\n", sha3_ctx->inst_num, sctx_size);
 
     sha3_ctx->session_ctx =
-        (CpaCySymSessionCtx)qaeCryptoMemAlloc(sctx_size, __FILE__, __LINE__);
+        (CpaCySymSessionCtx)qat_mem_alloc(sctx_size, sha3_ctx->qat_svm, __FILE__, __LINE__);
     if (sha3_ctx->session_ctx == NULL) {
         WARN("Memory alloc failed for session ctx\n");
         QATerr(QAT_F_QAT_SHA3_SETUP_PARAM, ERR_R_MALLOC_FAILURE);
@@ -641,7 +675,7 @@ static int qat_sha3_setup_param(qat_sha3_ctx *sha3_ctx)
                            qat_instance_details[sha3_ctx->inst_num].qat_instance_info.physInstId.packageId);
         }
         QATerr(QAT_F_QAT_SHA3_SETUP_PARAM, ERR_R_INTERNAL_ERROR);
-        qaeCryptoMemFreeNonZero(sha3_ctx->session_ctx);
+        QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->session_ctx, sha3_ctx->qat_svm);
         return 0;
     }
 
@@ -652,19 +686,19 @@ static int qat_sha3_setup_param(qat_sha3_ctx *sha3_ctx)
         WARN("cpaCyBufferListGetMetaSize failed for the instance id %d\n",
               sha3_ctx->inst_num);
         QATerr(QAT_F_QAT_SHA3_SETUP_PARAM, ERR_R_INTERNAL_ERROR);
-        qaeCryptoMemFreeNonZero(sha3_ctx->session_ctx);
+        QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->session_ctx, sha3_ctx->qat_svm);
         return 0;
     }
     DEBUG("Buffer MetaSize : %d\n", bufferMetaSize);
 
     if (bufferMetaSize) {
         sha3_ctx->pSrcBufferList.pPrivateMetaData =
-		  qaeCryptoMemAlloc(bufferMetaSize, __FILE__, __LINE__);
+		  qat_mem_alloc(bufferMetaSize, sha3_ctx->qat_svm, __FILE__, __LINE__);
         if (sha3_ctx->pSrcBufferList.pPrivateMetaData == NULL) {
             WARN("QMEM alloc failed for PrivateData\n");
             QATerr(QAT_F_QAT_SHA3_SETUP_PARAM, ERR_R_MALLOC_FAILURE);
-            qaeCryptoMemFreeNonZero(sha3_ctx->session_ctx);
-            qaeCryptoMemFreeNonZero(sha3_ctx->pSrcBufferList.pPrivateMetaData);
+            QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->session_ctx, sha3_ctx->qat_svm);
+            QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->pSrcBufferList.pPrivateMetaData, sha3_ctx->qat_svm);
             return 0;
         }
         sha3_ctx->pSrcBufferList.numBuffers = numBuffers;
@@ -740,7 +774,7 @@ static int qat_hw_sha3_offload(EVP_MD_CTX *ctx, const void *in, size_t len, int 
     }
 
     /* The variables in and out remain separate */
-    sha3_ctx->src_buffer.pData = qaeCryptoMemAlloc(len + sha3_ctx->md_size, __FILE__, __LINE__);
+    sha3_ctx->src_buffer.pData = qat_mem_alloc(len + sha3_ctx->md_size, sha3_ctx->qat_svm, __FILE__, __LINE__);
     if ((sha3_ctx->src_buffer.pData) == NULL) {
         WARN("Unable to allocate memory for buffer for sha3 hash.\n");
         QATerr(QAT_F_QAT_HW_SHA3_OFFLOAD, ERR_R_MALLOC_FAILURE);
@@ -811,7 +845,7 @@ static int qat_hw_sha3_offload(EVP_MD_CTX *ctx, const void *in, size_t len, int 
         if (((status == CPA_STATUS_RESTARTING) || (status == CPA_STATUS_FAIL))) {
             CRYPTO_QAT_LOG("Failed to submit request to qat inst_num %d device_id %d - %s\n",
                             sha3_ctx->inst_num,
-                            qat_instance_details[sha3_ctx->inst_num].qat_instance_info.physInstId.packageId);
+                            qat_instance_details[sha3_ctx->inst_num].qat_instance_info.physInstId.packageId, __func__);
         } else if (status == CPA_STATUS_UNSUPPORTED) {
             WARN("Algorithm type unsupported in QAT_HW\n");
             QATerr(QAT_F_QAT_HW_SHA3_OFFLOAD, QAT_R_ALGO_TYPE_UNSUPPORTED);
@@ -870,8 +904,8 @@ static int qat_hw_sha3_offload(EVP_MD_CTX *ctx, const void *in, size_t len, int 
         QATerr(QAT_F_QAT_HW_SHA3_OFFLOAD, ERR_R_INTERNAL_ERROR);
         if (op_done.status == CPA_STATUS_FAIL) {
             CRYPTO_QAT_LOG("Verification of result failed for qat inst_num %d device_id %d - %s\n",
-                            inst_num,
-                            qat_instance_details[sha3_ctx->_inst_num].qat_instance_info.physInstId.packageId);
+                            sha3_ctx->inst_num,
+                            qat_instance_details[sha3_ctx->inst_num].qat_instance_info.physInstId.packageId, __func__);
             qat_cleanup_op_done(&op_done);
             goto err;
         }
@@ -887,11 +921,9 @@ static int qat_hw_sha3_offload(EVP_MD_CTX *ctx, const void *in, size_t len, int 
     ret = 1;
 
 err:
-    if (sha3_ctx->src_buffer.pData) {
-        qaeCryptoMemFreeNonZero(sha3_ctx->src_buffer.pData);
-        sha3_ctx->src_buffer.pData = NULL;
-        sha3_ctx->opd->pDigestResult = NULL;
-    }
+    QAT_MEM_FREE_NONZERO_BUFF(sha3_ctx->src_buffer.pData, sha3_ctx->qat_svm);
+    sha3_ctx->src_buffer.pData = NULL;
+    sha3_ctx->opd->pDigestResult = NULL;
     return ret;
 }
 
@@ -966,6 +998,9 @@ static int qat_sha3_final(EVP_MD_CTX *ctx, unsigned char *md)
 #endif
 {
     qat_sha3_ctx *sha3_ctx = NULL;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    int sts = 0;
+#endif
 
 #ifdef ENABLE_QAT_FIPS
     qat_fips_get_approved_status();
@@ -976,6 +1011,13 @@ static int qat_sha3_final(EVP_MD_CTX *ctx, unsigned char *md)
         QATerr(QAT_F_QAT_SHA3_FINAL, QAT_R_CTX_NULL);
         return -1;
     }
+
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (qat_openssl3_sha_fallback == 1) {
+        DEBUG("- Switched to software mode\n");
+        goto use_sw_method;
+    }
+#endif
 
 #ifdef QAT_OPENSSL_PROVIDER
     sha3_ctx = ctx->qctx;
@@ -1015,6 +1057,12 @@ static int qat_sha3_final(EVP_MD_CTX *ctx, unsigned char *md)
     }
 #endif
     return 1;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+use_sw_method:
+    sts = EVP_MD_meth_get_final(GET_SW_SHA3_DIGEST(ctx)) (ctx, md);
+    DEBUG("SW Finished %p\n", ctx);
+    return sts;
+#endif
 }
 
 /******************************************************************************
@@ -1045,6 +1093,9 @@ static int qat_sha3_update(EVP_MD_CTX *ctx, const void *in, size_t len)
     unsigned char *p;
     size_t n;
     unsigned int data_size = 0;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    int sts = 0;
+#endif
 
 #ifdef ENABLE_QAT_FIPS
     qat_fips_get_approved_status();
@@ -1055,6 +1106,13 @@ static int qat_sha3_update(EVP_MD_CTX *ctx, const void *in, size_t len)
         QATerr(QAT_F_QAT_SHA3_UPDATE, QAT_R_CTX_NULL);
         return -1;
     }
+
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (qat_openssl3_sha_fallback == 1) {
+        DEBUG("- Switched to software mode\n");
+        goto use_sw_method;
+    }
+#endif
 
     DEBUG("QAT HW SHA3 Update ctx %p, in %p, len %ld\n", ctx, in, len);
 
@@ -1137,5 +1195,12 @@ static int qat_sha3_update(EVP_MD_CTX *ctx, const void *in, size_t len)
     }
 
     return 1;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+use_sw_method:
+    return EVP_MD_meth_get_update(GET_SW_SHA3_DIGEST(ctx))
+                  (ctx, in, len);
+    DEBUG("SW Finished %p\n", ctx);
+    return sts;
+#endif
 }
 #endif

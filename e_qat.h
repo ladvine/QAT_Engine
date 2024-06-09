@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
 /*****************************************************************************
  * @file e_qat.h
  *
- * This file provides and interface for an OpenSSL QAT engine implemenation
+ * This file provides and interface for an OpenSSL QAT engine implementation
  *
  *****************************************************************************/
 
@@ -73,12 +73,19 @@
 #  include "cpa.h"
 #  include "cpa_types.h"
 #  include "cpa_cy_common.h"
+#  ifdef USE_QAT_CONTIG_MEM
+#   include "qae_mem_utils.h"
+#  endif
+#  ifdef USE_USDM_MEM
+#   include "qat_hw_usdm_inf.h"
+#  endif
 # endif
 
 # ifdef QAT_SW
 #  include "qat_sw_queue.h"
 #  include "qat_sw_freelist.h"
 # endif
+# include "qat_common.h"
 
 # ifndef ERR_R_RETRY
 #  define ERR_R_RETRY 57
@@ -125,10 +132,11 @@
 typedef struct {
     int qatAsymInstanceNumForThread;
     int qatSymInstanceNumForThread;
+#ifdef ENABLE_QAT_HW_KPT
+    /* WPK index used in KPT scenario. */
+    int kpt_wpk_in_use;
+#endif
     unsigned int localOpsInFlight;
-# ifdef QAT_HW_SET_INSTANCE_THREAD
-    long int threadId;
-# endif
 } thread_local_variables_t;
 
 typedef struct {
@@ -142,8 +150,12 @@ typedef struct {
 } qat_accel_details_t;
 
 # define INSTANCE_TYPE_CRYPTO 1
-# define INSTANCE_TYPE_CRYPTO_ASYM 8
-# define INSTANCE_TYPE_CRYPTO_SYM 16
+# define QAT_INSTANCE_ASYM 8
+# define QAT_INSTANCE_SYM 16
+
+# define QAT_INSTANCE_ANY -1
+# define QAT_INSTANCE_CONTIGUOUS 0
+# define QAT_INSTANCE_SVM 1
 
 # define QAT_RETRY_BACKOFF_MODULO_DIVISOR 8
 # define QAT_INFINITE_MAX_NUM_RETRIES -1
@@ -165,10 +177,13 @@ typedef struct {
                 }                              \
             } while(0)
 
-# define QAT_QMEMFREE_BUFF(b)                 \
+# define QAT_MEM_FREE_BUFF(b, svm)            \
             do {                              \
                 if (b != NULL) {              \
-                    qaeCryptoMemFree(b);      \
+                    if (!svm)                 \
+                        qaeCryptoMemFree(b);  \
+                    else                      \
+                        OPENSSL_free(b);      \
                     b = NULL;                 \
                 }                             \
             } while(0)
@@ -182,58 +197,56 @@ typedef struct {
                 }                            \
             } while(0)
 
-# define QAT_CLEANSE_QMEMFREE_BUFF(b,len)    \
-            do {                             \
-                if (b != NULL) {             \
-                    OPENSSL_cleanse(b, len); \
-                    qaeCryptoMemFree(b);     \
-                    b = NULL;                \
-                }                            \
-            } while(0)
+# define QAT_MEM_FREE_NONZERO_BUFF(b, svm)               \
+         do {                                            \
+             if (b != NULL) {                            \
+                 if (!svm)                               \
+                     qaeCryptoMemFreeNonZero(b);         \
+                 else                                    \
+                     OPENSSL_free(b);                    \
+                 b = NULL;                               \
+             }                                           \
+          } while(0)
 
 # define QAT_CLEANSE_FLATBUFF(b) \
             OPENSSL_cleanse((b).pData, (b).dataLenInBytes)
 
-# define QAT_QMEM_FREE_FLATBUFF(b) \
-            qaeCryptoMemFree((b).pData)
+# define QAT_MEM_FREE_FLATBUFF(b, svm)            \
+         do {                                     \
+             if ((b).pData != NULL) {             \
+                 if (!svm)                        \
+                     qaeCryptoMemFree((b).pData); \
+                 else                             \
+                     OPENSSL_free((b).pData);     \
+                 (b).pData = NULL;                \
+              }                                   \
+          } while(0)
 
-# define QAT_QMEM_FREE_NONZERO_FLATBUFF(b) \
-            qaeCryptoMemFreeNonZero((b).pData)
-
-# define QAT_CLEANSE_QMEMFREE_FLATBUFF(b)  \
-            do {                           \
-                QAT_CLEANSE_FLATBUFF(b);   \
-                QAT_QMEM_FREE_FLATBUFF(b); \
-            } while(0)
-
-# define QAT_CLEANSE_QMEMFREE_NONZERO_FLATBUFF(b)  \
+# define QAT_CLEANSE_MEMFREE_FLATBUFF(b, svm)      \
             do {                                   \
-                QAT_CLEANSE_FLATBUFF(b);           \
-                QAT_QMEM_FREE_NONZERO_FLATBUFF(b); \
+                if ((b).pData != NULL) {           \
+                    QAT_CLEANSE_FLATBUFF(b);       \
+                    QAT_MEM_FREE_FLATBUFF(b, svm); \
+                }                                  \
             } while(0)
 
-# define QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(b)             \
-            do {                                              \
-                if ((b).pData != NULL)                        \
-                    QAT_CLEANSE_QMEMFREE_NONZERO_FLATBUFF(b); \
-            } while(0)
+# define QAT_MEM_FREE_NONZERO_FLATBUFF(b, svm)           \
+         do {                                            \
+             if ((b).pData != NULL) {                    \
+                 if (!svm)                               \
+                     qaeCryptoMemFreeNonZero((b).pData); \
+                 else                                    \
+                     OPENSSL_free((b).pData);            \
+                 (b).pData = NULL;                       \
+             }                                           \
+          } while(0)
 
-# define QAT_CHK_CLNSE_QMFREE_FLATBUFF(b)             \
-            do {                                      \
-                if ((b).pData != NULL)                \
-                    QAT_CLEANSE_QMEMFREE_FLATBUFF(b); \
-            } while(0)
-
-# define QAT_CHK_QMFREE_FLATBUFF(b)            \
-            do {                               \
-                if ((b).pData != NULL)         \
-                    QAT_QMEM_FREE_FLATBUFF(b); \
-            } while(0)
-
-# define QAT_CHK_QMFREE_NONZERO_FLATBUFF(b)            \
-            do {                                       \
-                if ((b).pData != NULL)                 \
-                    QAT_QMEM_FREE_NONZERO_FLATBUFF(b); \
+# define QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(b, svm)         \
+            do {                                         \
+                if ((b).pData != NULL) {                 \
+                    QAT_CLEANSE_FLATBUFF(b);             \
+                    QAT_MEM_FREE_NONZERO_FLATBUFF(b, svm);    \
+                }                                        \
             } while(0)
 
 # define FLATBUFF_ALLOC_AND_CHAIN(b1, b2, len) \
@@ -244,13 +257,18 @@ typedef struct {
                 (b2).dataLenInBytes = len; \
             } while(0)
 
+#define FLATBUFF_ALLOC_AND_CHAIN_SVM(b1, b2, len) \
+            do {                                  \
+                (b1).pData = OPENSSL_zalloc(len); \
+                (b2).pData = (b1).pData;          \
+                (b1).dataLenInBytes = len;        \
+                (b2).dataLenInBytes = len;        \
+            } while(0)
+
 # define QAT_CONFIG_SECTION_NAME_SIZE 64
 # define QAT_MAX_CRYPTO_INSTANCES 256
 # define QAT_MAX_CRYPTO_ACCELERATORS 512
 
-# ifdef QAT_HW_SET_INSTANCE_THREAD
-# define QAT_MAX_CRYPTO_THREADS 256
-# endif
 /*
  * The default interval in nanoseconds used for the internal polling thread
  */
@@ -282,7 +300,7 @@ typedef struct {
 
 /*
  * The default timeout in seconds used when waiting for events that requests
- * are inflight.
+ * are in-flight.
  */
 # define QAT_EVENT_TIMEOUT_IN_SEC 1
 #endif
@@ -290,7 +308,7 @@ typedef struct {
 #ifdef QAT_SW
 /*
  * Used to size the freelist and queue as it represents how many
- * requests can be inflight at once.
+ * requests can be in-flight at once.
  */
 # ifndef MULTIBUFF_MAX_INFLIGHTS
 #  define MULTIBUFF_MAX_INFLIGHTS 128
@@ -327,8 +345,8 @@ typedef struct {
 # define MULTIBUFF_BATCH 8
 
 /*
- * SM3 can handle processing upto 16 requests while others can handle
- * upto 8 requests only */
+ * SM3 can handle processing up to 16 requests while others can handle
+ * up to 8 requests only */
 # ifndef MULTIBUFF_SM3_BATCH
 #  define MULTIBUFF_SM3_BATCH 16
 # endif
@@ -342,8 +360,8 @@ typedef struct {
 # endif
 
 /*
- * SM4 can handle processing upto 16 requests while others can handle
- * upto 8 requests only
+ * SM4 can handle processing up to 16 requests while others can handle
+ * up to 8 requests only
  */
 # ifndef MULTIBUFF_SM4_BATCH
 #  define MULTIBUFF_SM4_BATCH 16
@@ -383,6 +401,13 @@ extern const char *engine_qat_id;
 extern const char *engine_qat_name;
 extern unsigned int engine_inited;
 extern int fallback_to_openssl;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+extern int qat_openssl3_prf_fallback;
+extern int qat_openssl3_hkdf_fallback;
+extern int qat_openssl3_sm2_fallback;
+extern int qat_openssl3_sm3_fallback;
+extern int qat_openssl3_sha_fallback;
+#endif
 extern int fallback_to_qat_sw; /* QAT HW initialization fail, offload to QAT SW. */
 extern int qat_hw_offload;
 extern int qat_sw_offload;
@@ -402,6 +427,7 @@ extern int qat_sw_ecdh_offload;
 extern int qat_sw_ecdsa_offload;
 extern int qat_sw_gcm_offload;
 extern int qat_sw_sm2_offload;
+extern int qat_hw_sm2_offload;
 extern int qat_hw_sha_offload;
 extern int qat_hw_sm3_offload;
 # ifdef ENABLE_QAT_FIPS
@@ -416,6 +442,7 @@ extern int qat_sw_sm3_offload;
 extern int qat_sw_sm4_cbc_offload;
 extern int qat_sw_sm4_gcm_offload;
 extern int qat_sw_sm4_ccm_offload;
+extern int qat_hw_aes_ccm_offload;
 extern int qat_hw_keep_polling;
 extern int qat_sw_keep_polling;
 extern int enable_external_polling;
@@ -437,6 +464,7 @@ extern pthread_t qat_timer_poll_func_thread;
 extern int cleared_to_start;
 extern pthread_mutex_t qat_poll_mutex;
 extern pthread_cond_t qat_poll_condition;
+extern int qat_cond_wait_started;
 #ifdef ENABLE_QAT_FIPS
 extern int integrity_status;
 extern int qat_fips_service_indicator;
@@ -460,6 +488,7 @@ extern int qat_fips_service_indicator;
 #define ALGO_ENABLE_MASK_SM3                0x08000
 #define ALGO_ENABLE_MASK_SM4_GCM            0x10000
 #define ALGO_ENABLE_MASK_SM4_CCM            0x20000
+#define ALGO_ENABLE_MASK_AES_CCM            0x40000
 
 extern int qat_reload_algo;
 extern uint64_t qat_hw_algo_enable_mask;
@@ -469,6 +498,7 @@ extern int qat_rsa_coexist;
 extern int qat_ecdh_coexist;
 extern int qat_ecdsa_coexist;
 extern int qat_ecx_coexist;
+extern int qat_sm4_cbc_coexist;
 extern __thread unsigned int qat_sw_rsa_priv_req;
 extern __thread unsigned int qat_sw_rsa_pub_req;
 extern __thread unsigned int qat_sw_ecdsa_sign_req;
@@ -476,6 +506,7 @@ extern __thread unsigned int qat_sw_ecdh_keygen_req;
 extern __thread unsigned int qat_sw_ecdh_derive_req;
 extern __thread unsigned int qat_sw_ecx_keygen_req;
 extern __thread unsigned int qat_sw_ecx_derive_req;
+extern __thread unsigned int qat_sw_sm4_cbc_cipher_req;
 extern __thread int num_rsa_priv_retry;
 extern __thread int num_rsa_pub_retry;
 extern __thread int num_ecdsa_sign_retry;
@@ -483,6 +514,7 @@ extern __thread int num_ecdh_keygen_retry;
 extern __thread int num_ecdh_derive_retry;
 extern __thread int num_ecx_keygen_retry;
 extern __thread int num_ecx_derive_retry;
+extern __thread int num_sm4_cbc_cipher_retry;
 extern __thread unsigned long long num_rsa_hw_priv_reqs;
 extern __thread unsigned long long num_rsa_sw_priv_reqs;
 extern __thread unsigned long long num_rsa_hw_pub_reqs;
@@ -497,7 +529,10 @@ extern __thread unsigned long long num_ecx_hw_keygen_reqs;
 extern __thread unsigned long long num_ecx_sw_keygen_reqs;
 extern __thread unsigned long long num_ecx_hw_derive_reqs;
 extern __thread unsigned long long num_ecx_sw_derive_reqs;
-#define QAT_RETRY_COUNT 8
+extern __thread unsigned long long num_sm4_cbc_hw_cipher_reqs;
+extern __thread unsigned long long num_sm4_cbc_sw_cipher_reqs;
+#define QAT_SW_SWITCH_MB8 8
+#define QAT_SW_SWITCH_MB16 16
 
 # ifdef QAT_HW
 extern char qat_config_section_name[QAT_CONFIG_SECTION_NAME_SIZE];
@@ -512,6 +547,8 @@ extern CpaInstanceHandle *qat_instance_handles;
 extern Cpa16U qat_num_instances;
 extern Cpa16U qat_asym_num_instance;
 extern Cpa16U qat_sym_num_instance;
+extern Cpa16U qat_svm_num_instance;
+extern Cpa16U qat_contig_num_instance;
 extern Cpa32U qat_num_devices;
 extern pthread_key_t thread_local_variables;
 extern pthread_mutex_t qat_instance_mutex;
@@ -522,10 +559,18 @@ extern int qat_epoll_timeout;
 extern int qat_max_retry_count;
 extern unsigned int qat_map_sym_inst[QAT_MAX_CRYPTO_INSTANCES];
 extern unsigned int qat_map_asym_inst[QAT_MAX_CRYPTO_INSTANCES];
-# ifdef QAT_HW_SET_INSTANCE_THREAD
-extern long int threadId[QAT_MAX_CRYPTO_THREADS];
-extern int threadCount;
-# endif
+extern unsigned int qat_map_svm_inst[QAT_MAX_CRYPTO_INSTANCES];
+
+#  ifdef ENABLE_QAT_HW_KPT
+#   include "qat_hw_kpt.h"
+#   include "cpa_cy_kpt.h"
+
+#   define KPT_INVALID_WPK_IDX -1
+
+extern int kpt_enabled;
+extern int kpt_inited;
+#  endif
+
 # endif
 
 # ifdef QAT_SW
@@ -673,13 +718,13 @@ int is_any_device_available(void);
 
 /******************************************************************************
  * function:
- *         get_next_inst_num(int inst_type)
+ *         get_instance(int inst_type, int mem_type)
  *
  * description:
  *   Return the next instance number to use for an operation.
  *
  ******************************************************************************/
-int get_next_inst_num(int inst_type);
+int get_instance(int inst_type, int mem_type);
 
 
 /******************************************************************************
@@ -795,6 +840,25 @@ int qat_engine_finish(ENGINE *e);
  ******************************************************************************/
 int qat_engine_finish_int(ENGINE *e, int reset_globals);
 
+#ifdef ENABLE_QAT_HW_KPT
+/******************************************************************************
+* function:
+*         qat_engine_load_privkey(ENGINE *e, const char *key_id, 
+*                          UI_METHOD *ui_method, void *callback_data)
+*
+* @param e             [IN] - OpenSSL engine pointer
+* @param key_id        [IN] - String of Path to WPK file
+* @param ui_method     [IN] - Unused
+* @param callback_data [IN] - Unused
+*
+* description:
+*   Qat engine load private key function.
+*   This function will be hooked by openssl and used to load WPK file 
+*   in KPT scenario.
+******************************************************************************/
+EVP_PKEY *qat_engine_load_privkey(ENGINE *e, const char *key_id,
+                                  UI_METHOD *ui_method, void *callback_data);
+#endif
 /*****************************************************************************
  * function:
  *          int qat_pthread_mutex_lock(void)
@@ -867,6 +931,7 @@ int qat_sw_cpu_support(void);
 # endif
 
 # ifdef QAT_OPENSSL_PROVIDER
+typedef _Atomic int CRYPTO_REF_COUNT;
 static __inline__ int CRYPTO_UP_REF(int *val, int *ret, ossl_unused void *lock)
 {
     *ret = __atomic_fetch_add(val, 1, __ATOMIC_RELAXED) + 1;
@@ -879,6 +944,22 @@ static __inline__ int CRYPTO_DOWN_REF(int *val, int *ret,
     *ret = __atomic_fetch_sub(val, 1, __ATOMIC_RELAXED) - 1;
     if (*ret == 0)
 	__atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return 1;
+}
+# endif
+
+# if OPENSSL_VERSION_NUMBER >= 0x30200000
+static __inline__ int QAT_CRYPTO_UP_REF(QAT_CRYPTO_REF_COUNT *refcnt, int *ret)
+{
+    *ret = __atomic_fetch_add(&refcnt->val, 1, __ATOMIC_RELAXED) + 1;
+    return 1;
+}
+
+static __inline__ int QAT_CRYPTO_DOWN_REF(QAT_CRYPTO_REF_COUNT *refcnt, int *ret)
+{
+    *ret = __atomic_fetch_sub(&refcnt->val, 1, __ATOMIC_RELAXED) - 1;
+    if (*ret == 0)
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return 1;
 }
 # endif

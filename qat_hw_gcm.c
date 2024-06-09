@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2020-2023 Intel Corporation.
+ *   Copyright(c) 2020-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,12 +49,6 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
-#ifdef USE_QAT_CONTIG_MEM
-# include "qae_mem_utils.h"
-#endif
-#ifdef USE_USDM_MEM
-# include "qat_hw_usdm_inf.h"
-#endif
 #include "e_qat.h"
 #include "qat_utils.h"
 #include "qat_hw_callback.h"
@@ -136,15 +130,27 @@ static int qat_session_data_init(EVP_CIPHER_CTX *ctx,
     }
 
     if (key != NULL) {
-        if (qctx->cipher_key) {
-            qaeCryptoMemFreeNonZero(qctx->cipher_key);
-            qctx->cipher_key = NULL;
-	}
+        if (qctx->qat_svm) {
+            if (qctx->cipher_key){
+                OPENSSL_free(qctx->cipher_key);
+                qctx->cipher_key = NULL;
+            }
+#ifdef QAT_OPENSSL_PROVIDER
+            qctx->cipher_key = OPENSSL_zalloc(keylen);
+#else
+            qctx->cipher_key = OPENSSL_zalloc(EVP_CIPHER_CTX_key_length(ctx));
+#endif
+        } else {
+            if (qctx->cipher_key) {
+                qaeCryptoMemFreeNonZero(qctx->cipher_key);
+                qctx->cipher_key = NULL;
+            }
 #ifdef QAT_OPENSSL_PROVIDER
             qctx->cipher_key = qaeCryptoMemAlloc(keylen, __FILE__, __LINE__);
 #else
             qctx->cipher_key = qaeCryptoMemAlloc(EVP_CIPHER_CTX_key_length(ctx), __FILE__, __LINE__);
 #endif
+        }
 
         if (qctx->cipher_key == NULL) {
             WARN("Unable to allocate memory for qctx->cipher_key.\n");
@@ -301,13 +307,21 @@ int qat_aes_gcm_init(EVP_CIPHER_CTX *ctx,
         return 0;
     }
 
+    if ((qctx->inst_num = get_instance(QAT_INSTANCE_SYM, QAT_INSTANCE_ANY))
+        == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get QAT Instance Handle\n");
+        return 0;
+    }
+
+    qctx->qat_svm = !qat_instance_details[qctx->inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
+
     if (NULL == qctx->iv) {
         /* The length of the IV in the TLS case is fixed = 12 Bytes */
         qctx->iv_len = QAT_GCM_TLS_TOTAL_IV_LEN;
 #ifdef QAT_OPENSSL_PROVIDER
-        qctx->iv = qaeCryptoMemAlloc(GCM_IV_MAX_SIZE, __FILE__, __LINE__);
+        qctx->iv = qat_mem_alloc(GCM_IV_MAX_SIZE, qctx->qat_svm,  __FILE__, __LINE__);
 #else
-        qctx->iv = qaeCryptoMemAlloc(EVP_CIPHER_CTX_iv_length(ctx), __FILE__, __LINE__);
+        qctx->iv = qat_mem_alloc(EVP_CIPHER_CTX_iv_length(ctx), qctx->qat_svm, __FILE__, __LINE__);
 #endif
         if (qctx->iv == NULL) {
             WARN("iv is NULL.\n");
@@ -349,15 +363,12 @@ int qat_aes_gcm_init(EVP_CIPHER_CTX *ctx,
 err:
     if (NULL != qctx->iv) {
         if (qctx->iv != EVP_CIPHER_CTX_iv_noconst(ctx)) {
-            qaeCryptoMemFreeNonZero(qctx->iv);
-        }
-        qctx->iv = NULL;
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->iv, qctx->qat_svm);
+            qctx->iv = NULL;
+	}
     }
 
-    if (NULL != qctx->cipher_key) {
-        qaeCryptoMemFree(qctx->cipher_key);
-        qctx->cipher_key = NULL;
-    }
+    QAT_MEM_FREE_BUFF(qctx->cipher_key, qctx->qat_svm);
     return 0;
 }
 
@@ -652,7 +663,7 @@ int qat_aes_gcm_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void *ptr)
                     aad_buffer_len += AES_BLOCK_SIZE - (aad_buffer_len % AES_BLOCK_SIZE);
                     DEBUG("Adjusting AAD buffer length = %d\n", aad_buffer_len);
                 }
-                qctx->aad = qaeCryptoMemAlloc(aad_buffer_len, __FILE__, __LINE__);
+                qctx->aad = qat_mem_alloc(aad_buffer_len, qctx->qat_svm, __FILE__, __LINE__);
                 if (NULL == qctx->aad) {
                     WARN("Unable to allocate memory for TLS header\n");
                     QATerr(QAT_F_QAT_AES_GCM_CTRL, QAT_R_AAD_MALLOC_FAILURE);
@@ -766,9 +777,11 @@ int qat_aes_gcm_cleanup(EVP_CIPHER_CTX *ctx)
     }
 
     /* Wait for in-flight requests before removing session */
-    do {
-        cpaCySymSessionInUse(qctx->qat_ctx, &sessionInUse);
-    } while (sessionInUse);
+    if (qctx->qat_ctx != NULL) {
+        do {
+            cpaCySymSessionInUse(qctx->qat_ctx, &sessionInUse);
+        } while (sessionInUse);
+    }
 
     session_data = qctx->session_data;
     if (session_data) {
@@ -782,33 +795,16 @@ int qat_aes_gcm_cleanup(EVP_CIPHER_CTX *ctx)
                  * cleanup the rest to avoid memory leaks
                  */
             }
-            qaeCryptoMemFreeNonZero(qctx->qat_ctx);
-            qctx->qat_ctx = NULL;
-        }
-        /* Cleanup the memory */
-        if (qctx->aad) {
-            qaeCryptoMemFreeNonZero(qctx->aad);
-            qctx->aad = NULL;
-        }
-        if (qctx->srcBufferList.pPrivateMetaData) {
-            qaeCryptoMemFreeNonZero(qctx->srcBufferList.pPrivateMetaData);
-            qctx->srcBufferList.pPrivateMetaData = NULL;
-        }
-        if (qctx->dstBufferList.pPrivateMetaData) {
-            qaeCryptoMemFreeNonZero(qctx->dstBufferList.pPrivateMetaData);
-            qctx->dstBufferList.pPrivateMetaData = NULL;
-        }
-        if (qctx->iv) {
-            qaeCryptoMemFree(qctx->iv);
-            qctx->iv = NULL;
-        }
-        if (qctx->cipher_key) {
-            qaeCryptoMemFree(qctx->cipher_key);
-            qctx->cipher_key = NULL;
-        }
-        if (qctx->OpData.pDigestResult) {
-            qaeCryptoMemFree(qctx->OpData.pDigestResult);
-            qctx->OpData.pDigestResult = NULL;
+
+            /* Cleanup the memory */
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->qat_ctx, qctx->qat_svm);
+            if (!qctx->qat_svm)
+                QAT_MEM_FREE_NONZERO_BUFF(qctx->aad, qctx->qat_svm);
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->srcBufferList.pPrivateMetaData, qctx->qat_svm);
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->dstBufferList.pPrivateMetaData, qctx->qat_svm);
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->iv, qctx->qat_svm);
+            QAT_MEM_FREE_BUFF(qctx->cipher_key, qctx->qat_svm);
+            QAT_MEM_FREE_BUFF(qctx->OpData.pDigestResult, qctx->qat_svm);
         }
         session_data->cipherSetupData.pCipherKey = NULL;
         OPENSSL_clear_free(session_data, sizeof(CpaCySymSessionSetupData));
@@ -920,12 +916,14 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
         return 0;
     }
 
-    qctx->inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_SYM);
-    if (qctx->inst_num == QAT_INVALID_INSTANCE) {
+    if ((qctx->inst_num = get_instance(QAT_INSTANCE_SYM, QAT_INSTANCE_ANY))
+        == QAT_INVALID_INSTANCE) {
         WARN("Failed to get QAT Instance Handle\n");
         QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
         return 0;
     }
+
+    qctx->qat_svm = !qat_instance_details[qctx->inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
 
     /* Update digestResultLenInBytes with qctx->tag_len if both lengths
        are mismatch for decryption */
@@ -944,7 +942,8 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
         QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
         return 0;
     }
-    pSessionCtx = (CpaCySymSessionCtx) qaeCryptoMemAlloc(sessionCtxSize,
+
+    pSessionCtx = (CpaCySymSessionCtx) qat_mem_alloc(sessionCtxSize, qctx->qat_svm,
                                                          __FILE__, __LINE__);
     if (NULL == pSessionCtx) {
         WARN("pSessionCtx malloc failed\n");
@@ -959,7 +958,7 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
                             pSessionCtx) != CPA_STATUS_SUCCESS) {
         WARN("cpaCySymInitSession failed.\n");
         QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
-        qaeCryptoMemFree(pSessionCtx);
+        QAT_MEM_FREE_BUFF(pSessionCtx, qctx->qat_svm);
         return 0;
     }
     qctx->qat_ctx = pSessionCtx;
@@ -971,7 +970,7 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
                                    != CPA_STATUS_SUCCESS) {
         WARN("cpaCyBufferListGetBufferSize failed.\n");
         QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
-        qaeCryptoMemFree(pSessionCtx);
+        QAT_MEM_FREE_BUFF(pSessionCtx, qctx->qat_svm);
         return 0;
     }
 
@@ -985,21 +984,22 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
 
     if (qctx->meta_size) {
         qctx->srcBufferList.pPrivateMetaData =
-            qaeCryptoMemAlloc(qctx->meta_size, __FILE__, __LINE__);
+                qat_mem_alloc(qctx->meta_size, qctx->qat_svm, __FILE__, __LINE__);
         if (NULL == qctx->srcBufferList.pPrivateMetaData) {
             WARN("srcBufferList.pPrivateMetaData is NULL.\n");
             QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
-            qaeCryptoMemFreeNonZero(pSessionCtx);
+            QAT_MEM_FREE_NONZERO_BUFF(pSessionCtx, qctx->qat_svm);
             return 0;
         }
+
         qctx->dstBufferList.pPrivateMetaData =
-            qaeCryptoMemAlloc(qctx->meta_size, __FILE__, __LINE__);
+                qat_mem_alloc(qctx->meta_size, qctx->qat_svm, __FILE__, __LINE__);
         if (NULL == qctx->dstBufferList.pPrivateMetaData) {
             WARN("dstBufferList.pPrivateMetaData is NULL.\n");
             QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, ERR_R_INTERNAL_ERROR);
-            qaeCryptoMemFreeNonZero(qctx->srcBufferList.pPrivateMetaData);
+            QAT_MEM_FREE_NONZERO_BUFF(qctx->srcBufferList.pPrivateMetaData, qctx->qat_svm);
             qctx->srcBufferList.pPrivateMetaData = NULL;
-            qaeCryptoMemFreeNonZero(pSessionCtx);
+            QAT_MEM_FREE_NONZERO_BUFF(pSessionCtx, qctx->qat_svm);
             return 0;
         }
     } else {
@@ -1025,15 +1025,15 @@ static int qat_aes_gcm_session_init(EVP_CIPHER_CTX *ctx)
     /* Following parameters are ignored in GCM */
     qctx->OpData.messageLenToHashInBytes = 0;
     qctx->OpData.hashStartSrcOffsetInBytes = 0;
-    qctx->OpData.pDigestResult = qaeCryptoMemAlloc(EVP_GCM_TLS_TAG_LEN,  __FILE__, __LINE__);
+    qctx->OpData.pDigestResult = qat_mem_alloc(EVP_GCM_TLS_TAG_LEN, qctx->qat_svm,__FILE__, __LINE__);
     if (qctx->OpData.pDigestResult == NULL) {
         WARN("Unable to allocate memory for qctx->OpData.pDigestResult \n");
         QATerr(QAT_F_QAT_AES_GCM_SESSION_INIT, QAT_R_KEY_MALLOC_FAILURE);
-        qaeCryptoMemFreeNonZero(qctx->srcBufferList.pPrivateMetaData);
-        qaeCryptoMemFreeNonZero(qctx->dstBufferList.pPrivateMetaData);
+        QAT_MEM_FREE_NONZERO_BUFF(qctx->srcBufferList.pPrivateMetaData, qctx->qat_svm);
+        QAT_MEM_FREE_NONZERO_BUFF(qctx->dstBufferList.pPrivateMetaData, qctx->qat_svm);
+        QAT_MEM_FREE_NONZERO_BUFF(pSessionCtx, qctx->qat_svm);
         qctx->srcBufferList.pPrivateMetaData = NULL;
         qctx->dstBufferList.pPrivateMetaData = NULL;
-        qaeCryptoMemFreeNonZero(pSessionCtx);
         return 0;
     }
 
@@ -1084,10 +1084,6 @@ int qat_aes_gcm_tls_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     thread_local_variables_t *tlv = NULL;
 
     CRYPTO_QAT_LOG("CIPHER - %s\n", __func__);
-
-#ifdef ENABLE_QAT_FIPS
-    qat_fips_get_approved_status();
-#endif
 
     /* Encrypt/decrypt must be performed in place */
     if (NULL == in ||
@@ -1182,20 +1178,30 @@ int qat_aes_gcm_tls_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 
     /* Build request/response buffers */
     /* Allocate the memory of the FlatBuffer and copy the payload */
-    qctx->srcFlatBuffer.pData = qaeCryptoMemAlloc(buffer_len, __FILE__, __LINE__);
+    if (!qctx->qat_svm)
+        qctx->srcFlatBuffer.pData = qaeCryptoMemAlloc(buffer_len, __FILE__, __LINE__);
+    else
+        qctx->srcFlatBuffer.pData = (Cpa8U *)in;
     if (NULL == qctx->srcFlatBuffer.pData) {
         WARN("src/dst buffer allocation.\n");
         goto err;
     }
-    qctx->dstFlatBuffer.pData = qctx->srcFlatBuffer.pData;
+
+    if (!qctx->qat_svm)
+        qctx->dstFlatBuffer.pData = qctx->srcFlatBuffer.pData;
+    else
+        qctx->dstFlatBuffer.pData = (Cpa8U *)out;
+
     if (!enc) {
         /* Decryption: the tag is appended and must be copied to the buffer */
-        memcpy(qctx->srcFlatBuffer.pData, in, message_len);
+        if (!qctx->qat_svm)
+            memcpy(qctx->srcFlatBuffer.pData, in, message_len);
         memcpy(qctx->OpData.pDigestResult, in + message_len, EVP_GCM_TLS_TAG_LEN);
         qctx->tag_len = EVP_GCM_TLS_TAG_LEN;
     } else {
         /* Encryption: copy only the payload */
-        memcpy(qctx->srcFlatBuffer.pData, in, message_len);
+        if (!qctx->qat_svm)
+            memcpy(qctx->srcFlatBuffer.pData, in, message_len);
     }
 
     /* The operation is done in place in the buffers
@@ -1225,9 +1231,9 @@ int qat_aes_gcm_tls_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     }
 
     CRYPTO_QAT_LOG("CIPHER - %s\n", __func__);
-    DUMP_SYM_PERFORM_OP_GCM(qat_instance_handles[qctx->inst_num],
-                            qctx->OpData, qctx->srcBufferList,
-                            qctx->dstBufferList);
+    DUMP_SYM_PERFORM_OP_GCM_CCM(qat_instance_handles[qctx->inst_num],
+                                qctx->OpData, qctx->srcBufferList,
+                                qctx->dstBufferList);
 
     sts = qat_sym_perform_op(qctx->inst_num,
                              &op_done,
@@ -1236,9 +1242,12 @@ int qat_aes_gcm_tls_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                              &(qctx->dstBufferList),
                              &(qctx->session_data->verifyDigest));
     if (sts != CPA_STATUS_SUCCESS) {
-        qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
-        qctx->srcFlatBuffer.pData = NULL;
-        qctx->dstFlatBuffer.pData = NULL;
+        if (!qctx->qat_svm) {
+            qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
+            qctx->srcFlatBuffer.pData = NULL;
+            qctx->dstFlatBuffer.pData = NULL;
+        }
+
         qat_cleanup_op_done(&op_done);
         WARN("cpaCySymPerformOp failed sts=%d.\n",sts);
         if (sts == CPA_STATUS_UNSUPPORTED) {
@@ -1308,17 +1317,19 @@ int qat_aes_gcm_tls_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     }
 #endif
 
-    DUMP_SYM_PERFORM_OP_GCM_OUTPUT(qctx->dstBufferList);
+    DUMP_SYM_PERFORM_OP_GCM_CCM_OUTPUT(qctx->dstBufferList);
     QAT_DEC_IN_FLIGHT_REQS(num_requests_in_flight, tlv);
 
     qat_cleanup_op_done(&op_done);
 
-    memcpy(out, qctx->dstFlatBuffer.pData, message_len);
+    if (!qctx->qat_svm) {
+        memcpy(out, qctx->dstFlatBuffer.pData, message_len);
+        qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
+        qctx->srcFlatBuffer.pData = NULL;
+        qctx->dstFlatBuffer.pData = NULL;
+    }
     memcpy(out + message_len, qctx->OpData.pDigestResult, EVP_GCM_TLS_TAG_LEN);
     DUMPL("pDigestResult", qctx->OpData.pDigestResult, EVP_GCM_TLS_TAG_LEN);
-    qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
-    qctx->srcFlatBuffer.pData = NULL;
-    qctx->dstFlatBuffer.pData = NULL;
 
 err:
     /* Don't reuse the IV */
@@ -1425,6 +1436,9 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
         QATerr(QAT_F_QAT_AES_GCM_CIPHER, QAT_R_QCTX_NULL);
         return RET_FAIL;
     }
+#ifdef ENABLE_QAT_FIPS
+    qat_fips_get_approved_status();
+#endif
 
 #ifdef QAT_OPENSSL_PROVIDER
     enc = QAT_GCM_GET_ENC(qctx);
@@ -1460,7 +1474,8 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
             if (qctx->session_data->hashSetupData.authModeSetupData.aadLenInBytes != aad_len) {
                 /* Free the memory used for the previous AAD */
                 if (qctx->aad) {
-                    qaeCryptoMemFreeNonZero(qctx->aad);
+                    if (!qctx->qat_svm)
+                        qaeCryptoMemFreeNonZero(qctx->aad);
                     qctx->aad = NULL;
                 }
                 /* For QAT the length of the buffer for AAD must be multiple of block size */
@@ -1469,11 +1484,13 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                     aad_buffer_len += AES_BLOCK_SIZE - (aad_buffer_len % AES_BLOCK_SIZE);
                     DEBUG("Adjusting AAD buffer length = %d\n", aad_buffer_len);
                 }
-                qctx->aad = qaeCryptoMemAlloc(aad_buffer_len, __FILE__, __LINE__);
-                if (NULL == qctx->aad) {
-                    WARN("Unable to allocate memory for AAD\n");
-                    QATerr(QAT_F_QAT_AES_GCM_CIPHER, ERR_R_INTERNAL_ERROR);
-                    return RET_FAIL ;
+                if (!qctx->qat_svm) {
+                    qctx->aad = qaeCryptoMemAlloc(aad_buffer_len, __FILE__, __LINE__);
+                    if (NULL == qctx->aad) {
+                        WARN("Unable to allocate memory for AAD\n");
+                        QATerr(QAT_F_QAT_AES_GCM_CIPHER, ERR_R_INTERNAL_ERROR);
+                        return RET_FAIL ;
+                    }
                 }
 
                 /* Set the length of the AAD */
@@ -1483,7 +1500,10 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
             *padlen = aad_len;
 #endif
 
-            memcpy(qctx->aad, in, aad_len);
+            if (!qctx->qat_svm)
+                memcpy(qctx->aad, in, aad_len);
+            else
+               qctx->aad = (Cpa8U *) in;
             DUMPL("qctx->aad", qctx->aad, aad_len);
             /* The pAdditionalAuthData will be initialized firstly in
              * qat_aes_gcm_session_init(), but the AAD can be updated
@@ -1516,14 +1536,22 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 
             /* Build request/response buffers */
             /* Allocate the memory of the FlatBuffer and copy the payload */
-            qctx->srcFlatBuffer.pData = qaeCryptoMemAlloc(buffer_len, __FILE__, __LINE__);
+            if (!qctx->qat_svm)
+               qctx->srcFlatBuffer.pData = qaeCryptoMemAlloc(buffer_len, __FILE__, __LINE__);
+            else
+               qctx->srcFlatBuffer.pData = (Cpa8U *)in;
             if (NULL == qctx->srcFlatBuffer.pData) {
                 WARN("src/dst buffer allocation.\n");
                 QATerr(QAT_F_QAT_AES_GCM_CIPHER, ERR_R_INTERNAL_ERROR);
                 return RET_FAIL;
             }
-            qctx->dstFlatBuffer.pData = qctx->srcFlatBuffer.pData;
-            memcpy(qctx->srcFlatBuffer.pData, in, len);
+
+            if (!qctx->qat_svm) {
+                qctx->dstFlatBuffer.pData = qctx->srcFlatBuffer.pData;
+                memcpy(qctx->srcFlatBuffer.pData, in, len);
+            } else {
+                qctx->dstFlatBuffer.pData = (Cpa8U *)out;
+            }
 
             /* The operation is done in place in the buffers
              * The variables in and out remain separate */
@@ -1548,9 +1576,11 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 #else
                 if (NULL == EVP_CIPHER_CTX_buf_noconst(ctx)) {
                     WARN("Tag not set\n");
-                    qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
-                    qctx->srcFlatBuffer.pData = NULL;
-                    qctx->dstFlatBuffer.pData = NULL;
+                    if (!qctx->qat_svm) {
+                        qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
+                        qctx->srcFlatBuffer.pData = NULL;
+                        qctx->dstFlatBuffer.pData = NULL;
+                    }
                     return RET_FAIL;
                 } else {
                     memcpy(qctx->OpData.pDigestResult, EVP_CIPHER_CTX_buf_noconst(ctx),
@@ -1576,9 +1606,9 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                 }
             }
 
-            DUMP_SYM_PERFORM_OP_GCM(qat_instance_handles[qctx->inst_num],
-                                    qctx->OpData, qctx->srcBufferList,
-                                    qctx->dstBufferList);
+            DUMP_SYM_PERFORM_OP_GCM_CCM(qat_instance_handles[qctx->inst_num],
+                                        qctx->OpData, qctx->srcBufferList,
+                                        qctx->dstBufferList);
             DUMPL("AAD: ", qctx->OpData.pAdditionalAuthData,
                            qctx->session_data->hashSetupData.authModeSetupData.aadLenInBytes);
 
@@ -1589,9 +1619,11 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                                      &(qctx->dstBufferList),
                                      &(qctx->session_data->verifyDigest));
             if (sts != CPA_STATUS_SUCCESS) {
-                qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
-                qctx->srcFlatBuffer.pData = NULL;
-                qctx->dstFlatBuffer.pData = NULL;
+                if (!qctx->qat_svm) {
+                    qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
+                    qctx->srcFlatBuffer.pData = NULL;
+                    qctx->dstFlatBuffer.pData = NULL;
+                }
                 qat_cleanup_op_done(&op_done);
                 WARN("cpaCySymPerformOp failed sts=%d.\n",sts);
                 if (sts == CPA_STATUS_UNSUPPORTED) {
@@ -1637,7 +1669,7 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
             } while (!op_done.flag ||
                      QAT_CHK_JOB_RESUMED_UNEXPECTEDLY(job_ret));
 
-            DUMP_SYM_PERFORM_OP_GCM_OUTPUT(qctx->dstBufferList);
+            DUMP_SYM_PERFORM_OP_GCM_CCM_OUTPUT(qctx->dstBufferList);
 
             if (enc) {
                 if (CPA_TRUE == op_done.verifyResult){
@@ -1648,7 +1680,7 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                 }
 
             } else {
-                /* qctx->tag_len < 0 condition is added to workarround
+                /* qctx->tag_len < 0 condition is added to workaround
                    OpenSSL Speed tests as tag will not be set */
                 if (CPA_TRUE == op_done.verifyResult || qctx->tag_len < 0) {
                     ret_val = len;
@@ -1676,10 +1708,13 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                 qctx->tag_len = EVP_GCM_TLS_TAG_LEN;
             }
 
-            memcpy(out, qctx->dstFlatBuffer.pData, len);
-            qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
-            qctx->srcFlatBuffer.pData = NULL;
-            qctx->dstFlatBuffer.pData = NULL;
+            if (!qctx->qat_svm) {
+                memcpy(out, qctx->dstFlatBuffer.pData, len);
+                qaeCryptoMemFreeNonZero(qctx->srcFlatBuffer.pData);
+                qctx->srcFlatBuffer.pData = NULL;
+                qctx->dstFlatBuffer.pData = NULL;
+            }
+
 #ifdef QAT_OPENSSL_PROVIDER
             *padlen = len;
 #endif
@@ -1688,8 +1723,10 @@ int qat_aes_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     } else {
         /* This is executed when Final is called */
         if (!enc) {
+# if OPENSSL_VERSION_NUMBER < 0x30200000
             if (qctx->tag_len < 0)
                 return RET_FAIL;
+# endif
             /* Don't reuse the IV */
             qctx->iv_set = 0;
             DEBUG("Decrypt Final()\n");

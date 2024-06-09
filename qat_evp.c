@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2019-2023 Intel Corporation.
+ *   Copyright(c) 2019-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -67,9 +67,11 @@
 # include "qat_hw_ec.h"
 #  ifndef QAT_BORINGSSL
 # include "qat_hw_gcm.h"
+# include "qat_hw_ccm.h"
 # include "qat_hw_sha3.h"
 # include "qat_hw_chachapoly.h"
 # include "qat_hw_sm3.h"
+# include "qat_hw_sm2.h"
 # endif /* QAT_BORINGSSL */
 #endif
 
@@ -87,6 +89,7 @@
 # include "qat_sw_ec.h"
 # include "qat_sw_rsa.h"
 # include "qat_sw_sm3.h"
+# include "qat_sw_sm2.h"
 # ifndef QAT_BORINGSSL
 # include "qat_sw_sm4_cbc.h"
 # endif /* QAT_BORINGSSL */
@@ -146,6 +149,11 @@ static chained_info info[] = {
 #ifdef ENABLE_QAT_SW_SM4_CCM
     {NID_sm4_ccm, NULL, SM4_KEY_SIZE},
 #endif
+#ifdef ENABLE_QAT_HW_CCM
+    {NID_aes_128_ccm, NULL, AES_KEY_SIZE_128},
+    {NID_aes_192_ccm, NULL, AES_KEY_SIZE_192},
+    {NID_aes_256_ccm, NULL, AES_KEY_SIZE_256},
+#endif
 };
 
 static const unsigned int num_cc = sizeof(info) / sizeof(chained_info);
@@ -177,6 +185,11 @@ int qat_cipher_nids[] = {
 #ifdef ENABLE_QAT_SW_SM4_CCM
     NID_sm4_ccm,
 #endif
+#ifdef ENABLE_QAT_HW_CCM
+    NID_aes_128_ccm,
+    NID_aes_192_ccm,
+    NID_aes_256_ccm,
+#endif
 };
 
 /* Supported EVP nids */
@@ -193,7 +206,7 @@ int qat_evp_nids[] = {
 # ifdef ENABLE_QAT_HW_ECX
     EVP_PKEY_X448,
 # endif
-# ifdef ENABLE_QAT_SW_SM2
+# if defined(ENABLE_QAT_SW_SM2) || defined(ENABLE_QAT_HW_SM2)
     EVP_PKEY_SM2
 # endif
 };
@@ -265,11 +278,16 @@ static PKT_THRESHOLD qat_pkt_threshold_table[] = {
 # ifdef ENABLE_QAT_HW_CHACHAPOLY
     {NID_chacha20_poly1305, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_DEFAULT},
 # endif
-#if defined(ENABLE_QAT_HW_SM4_CBC) || defined(ENABLE_QAT_SW_SM4_CBC)
+# if defined(ENABLE_QAT_HW_SM4_CBC) || defined(ENABLE_QAT_SW_SM4_CBC)
     {NID_sm4_cbc, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_SM4_CBC},
 # endif
 # ifdef ENABLE_QAT_HW_SM3
     {NID_sm3, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_HW_SM3},
+# endif
+# ifdef ENABLE_QAT_HW_CCM
+    {NID_aes_128_ccm, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_DEFAULT},
+    {NID_aes_192_ccm, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_DEFAULT},
+    {NID_aes_256_ccm, CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_DEFAULT},
 # endif
 };
 
@@ -294,28 +312,43 @@ static EVP_PKEY_METHOD *_hidden_x448_pmeth = NULL;
 /* Have a store of the s/w EVP_PKEY_METHOD for software fallback purposes. */
 const EVP_PKEY_METHOD *sw_x448_pmeth = NULL;
 
+#if defined(ENABLE_QAT_HW_SM2) || defined(ENABLE_QAT_SW_SM2)
+static EVP_PKEY_METHOD *_hidden_sm2_pmeth = NULL;
+const EVP_PKEY_METHOD *sw_sm2_pmeth = NULL;
+#endif
+
+#if defined(ENABLE_QAT_SW_SM3)
+int qat_sw_sm3_md_methods(EVP_MD *c)
+{
+    int res = 1;
+    res &= EVP_MD_meth_set_result_size(c, 32);
+    res &= EVP_MD_meth_set_input_blocksize(c, SM3_MSG_BLOCK_SIZE);
+    res &= EVP_MD_meth_set_app_datasize(c, sizeof(EVP_MD *) + sizeof(QAT_SM3_CTX_mb));
+    res &= EVP_MD_meth_set_flags(c, EVP_MD_CTX_FLAG_REUSE);
+#ifndef QAT_OPENSSL_PROVIDER
+    res &= EVP_MD_meth_set_init(c, qat_sw_sm3_init);
+    res &= EVP_MD_meth_set_update(c, qat_sw_sm3_update);
+    res &= EVP_MD_meth_set_final(c, qat_sw_sm3_final);
+#endif
+    return res;
+}
+#endif
+
 const EVP_MD *qat_sw_create_sm3_meth(int nid , int key_type)
 {
 #ifdef ENABLE_QAT_SW_SM3
     int res = 1;
     EVP_MD *qat_sw_sm3_meth = NULL;
 
+    if ((qat_sw_sm3_meth = EVP_MD_meth_new(nid, key_type)) == NULL) {
+        WARN("Failed to allocate digest methods for nid %d\n", nid);
+        return NULL;
+    }
     if (qat_sw_offload &&
         (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_SM3)) {
-        if ((qat_sw_sm3_meth = EVP_MD_meth_new(nid, key_type)) == NULL) {
-            WARN("Failed to allocate digest methods for nid %d\n", nid);
-            return NULL;
-        }
-
         /* For now check using MBX_ALGO_X25519 as algo info for sm3 is not implemented */
         if (mbx_get_algo_info(MBX_ALGO_X25519)) {
-            res &= EVP_MD_meth_set_result_size(qat_sw_sm3_meth, 32);
-            res &= EVP_MD_meth_set_input_blocksize(qat_sw_sm3_meth, SM3_MSG_BLOCK_SIZE);
-            res &= EVP_MD_meth_set_app_datasize(qat_sw_sm3_meth, sizeof(EVP_MD *) + sizeof(SM3_CTX_mb));
-            res &= EVP_MD_meth_set_flags(qat_sw_sm3_meth, EVP_MD_CTX_FLAG_REUSE);
-            res &= EVP_MD_meth_set_init(qat_sw_sm3_meth, qat_sw_sm3_init);
-            res &= EVP_MD_meth_set_update(qat_sw_sm3_meth, qat_sw_sm3_update);
-            res &= EVP_MD_meth_set_final(qat_sw_sm3_meth, qat_sw_sm3_final);
+            res = qat_sw_sm3_md_methods(qat_sw_sm3_meth);
         }
 
         if (0 == res) {
@@ -330,12 +363,27 @@ const EVP_MD *qat_sw_create_sm3_meth(int nid , int key_type)
     } else {
         qat_sw_sm3_offload = 0;
         DEBUG("QAT SW SM3 is disabled, using OpenSSL SW\n");
+# if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+        qat_openssl3_sm3_fallback = 1;
+        res = qat_sw_sm3_md_methods(qat_sw_sm3_meth);
+        if (0 == res) {
+            WARN("Failed to set MD methods for nid %d\n", nid);
+            EVP_MD_meth_free(qat_sw_sm3_meth);
+            return NULL;
+        }
+        return qat_sw_sm3_meth;
+# else
         return (EVP_MD *)EVP_sm3();
+# endif
     }
 #else
     qat_sw_sm3_offload = 0;
     DEBUG("QAT SW SM3 is disabled, using OpenSSL SW\n");
+# ifdef OPENSSL_NO_SM2_SM3
+    return NULL;
+# else
     return (EVP_MD *)EVP_sm3();
+# endif
 #endif
 }
 
@@ -506,6 +554,21 @@ int qat_ecx448_paramgen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
 }
 #endif
 
+#ifdef ENABLE_QAT_SW_ECX
+static void qat_ecx25519_pkey_methods(void)
+{
+        EVP_PKEY_meth_set_keygen(_hidden_x25519_pmeth, NULL, multibuff_x25519_keygen);
+        EVP_PKEY_meth_set_derive(_hidden_x25519_pmeth, NULL, multibuff_x25519_derive);
+# ifdef QAT_OPENSSL_3
+        EVP_PKEY_meth_set_paramgen(_hidden_x25519_pmeth, qat_ecx_paramgen_init,
+                                   qat_ecx25519_paramgen);
+# endif /* QAT_OPENSSL_3 */
+# ifndef QAT_OPENSSL_PROVIDER
+        EVP_PKEY_meth_set_ctrl(_hidden_x25519_pmeth, multibuff_x25519_ctrl, NULL);
+# endif
+}
+#endif
+
 EVP_PKEY_METHOD *qat_x25519_pmeth(void)
 {
     if (_hidden_x25519_pmeth) {
@@ -559,23 +622,22 @@ EVP_PKEY_METHOD *qat_x25519_pmeth(void)
     if (qat_sw_offload && !qat_hw_ecx_offload &&
         (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_ECX25519) &&
         mbx_get_algo_info(MBX_ALGO_X25519)) {
-        EVP_PKEY_meth_set_keygen(_hidden_x25519_pmeth, NULL, multibuff_x25519_keygen);
-        EVP_PKEY_meth_set_derive(_hidden_x25519_pmeth, NULL, multibuff_x25519_derive);
-# ifdef QAT_OPENSSL_3
-        EVP_PKEY_meth_set_paramgen(_hidden_x25519_pmeth, qat_ecx_paramgen_init,
-                                   qat_ecx25519_paramgen);
-# endif /* QAT_OPENSSL_3 */
-# ifndef QAT_OPENSSL_PROVIDER
-        EVP_PKEY_meth_set_ctrl(_hidden_x25519_pmeth, multibuff_x25519_ctrl, NULL);
-# endif
+        qat_ecx25519_pkey_methods();
         qat_sw_ecx_offload = 1;
         DEBUG("QAT SW X25519 registration succeeded\n");
     } else {
         qat_sw_ecx_offload = 0;
         DEBUG("QAT SW X25519 disabled\n");
     }
-#endif
 
+# if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (!qat_sw_offload) {
+        fallback_to_openssl = 1;
+        qat_ecx25519_pkey_methods();
+        return _hidden_x25519_pmeth;
+    }
+# endif
+#endif
     if (qat_hw_ecx_offload == 0 && qat_sw_ecx_offload == 0)
         EVP_PKEY_meth_copy(_hidden_x25519_pmeth, sw_x25519_pmeth);
 
@@ -663,9 +725,9 @@ static EVP_PKEY_METHOD *qat_create_pkey_meth(int nid)
         return qat_x448_pmeth();
 #endif
 
-#ifdef ENABLE_QAT_SW_SM2
+#if defined(ENABLE_QAT_HW_SM2) || defined(ENABLE_QAT_SW_SM2)
     case EVP_PKEY_SM2:
-      return mb_sm2_pmeth();
+      return qat_create_sm2_pmeth();
 #endif
 
     default:
@@ -729,6 +791,23 @@ static inline const EVP_CIPHER *qat_gcm_cipher_sw_impl(int nid)
     }
 }
 
+#ifdef ENABLE_QAT_HW_CCM
+const EVP_CIPHER *qat_ccm_cipher_sw_impl(int nid)
+{
+    switch (nid) {
+        case NID_aes_128_ccm:
+            return EVP_aes_128_ccm();
+        case NID_aes_192_ccm:
+            return EVP_aes_192_ccm();
+        case NID_aes_256_ccm:
+            return EVP_aes_256_ccm();
+        default:
+            WARN("Invalid nid %d\n", nid);
+            return NULL;
+    }
+}
+#endif
+
 /******************************************************************************
  * function:
  *         qat_create_gcm_cipher_meth(int nid, int keylen)
@@ -755,7 +834,7 @@ const EVP_CIPHER *qat_create_gcm_cipher_meth(int nid, int keylen)
 
 #ifdef ENABLE_QAT_SW_GCM
     if (qat_sw_offload && (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_AES_GCM)) {
-        res &= EVP_CIPHER_meth_set_iv_length(c, GCM_IV_DATA_LEN);
+        res &= EVP_CIPHER_meth_set_iv_length(c, IMB_GCM_IV_DATA_LEN);
         res &= EVP_CIPHER_meth_set_flags(c, VAESGCM_FLAG);
 #ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_init(c, vaesgcm_ciphers_init);
@@ -831,6 +910,76 @@ const EVP_CIPHER *qat_create_gcm_cipher_meth(int nid, int keylen)
 
 /******************************************************************************
  * function:
+ *         qat_create_ccm_cipher_meth(int nid, int keylen)
+ *
+ * @param nid    [IN] - Cipher NID to be created
+ * @param keylen [IN] - Key length of cipher [128|192|256]
+ * @retval            - EVP_CIPHER * to created cipher
+ * @retval            - NULL if failure
+ *
+ * description:
+ *   Create a new EVP_CIPHER based on requested nid for qat_hw
+ ******************************************************************************/
+#ifdef ENABLE_QAT_HW_CCM
+const EVP_CIPHER *qat_create_ccm_cipher_meth(int nid, int keylen)
+{
+    EVP_CIPHER *c = NULL;
+    int res = 1;
+
+    if ((c = EVP_CIPHER_meth_new(nid, AES_CCM_BLOCK_SIZE, keylen)) == NULL) {
+        WARN("Failed to allocate cipher methods for nid %d\n", nid);
+        return NULL;
+    }
+
+    if (qat_hw_offload &&
+        (qat_hw_algo_enable_mask & ALGO_ENABLE_MASK_AES_CCM)) {
+#if !defined(QAT20_OOT) && !defined(QAT_HW_INTREE)
+        if (nid == NID_aes_192_ccm || nid == NID_aes_256_ccm) {
+            EVP_CIPHER_meth_free(c);
+            DEBUG("OpenSSL SW AES_CCM_%d registration succeeded\n", keylen*8);
+            return qat_ccm_cipher_sw_impl(nid);
+        }
+#endif
+        res &= EVP_CIPHER_meth_set_iv_length(c, AES_CCM_IV_LEN);
+        res &= EVP_CIPHER_meth_set_flags(c, QAT_CCM_FLAGS);
+#ifndef QAT_OPENSSL_PROVIDER
+        res &= EVP_CIPHER_meth_set_init(c, qat_aes_ccm_init);
+        res &= EVP_CIPHER_meth_set_do_cipher(c, qat_aes_ccm_cipher);
+        res &= EVP_CIPHER_meth_set_cleanup(c, qat_aes_ccm_cleanup);
+#endif
+        res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(qat_ccm_ctx));
+        res &= EVP_CIPHER_meth_set_set_asn1_params(c, EVP_CIPH_FLAG_DEFAULT_ASN1 ?
+                                                   NULL : EVP_CIPHER_set_asn1_iv);
+        res &= EVP_CIPHER_meth_set_get_asn1_params(c, EVP_CIPH_FLAG_DEFAULT_ASN1 ?
+                                                   NULL : EVP_CIPHER_get_asn1_iv);
+#ifndef QAT_OPENSSL_PROVIDER
+        res &= EVP_CIPHER_meth_set_ctrl(c, qat_aes_ccm_ctrl);
+#endif
+        if (0 == res) {
+            WARN("Failed to set cipher methods for nid %d\n", nid);
+            EVP_CIPHER_meth_free(c);
+            return NULL;
+        }
+
+        qat_hw_aes_ccm_offload = 1;
+        DEBUG("QAT HW AES_CCM_%d registration succeeded\n", keylen*8);
+    } else {
+        qat_hw_aes_ccm_offload = 0;
+        DEBUG("QAT HW AES_CCM_%d is disabled\n", keylen*8);
+    }
+
+    if (!qat_hw_aes_ccm_offload) {
+        DEBUG("OpenSSL SW AES_CCM_%d registration succeeded\n", keylen*8);
+        EVP_CIPHER_meth_free(c);
+        return qat_ccm_cipher_sw_impl(nid);
+    }
+
+    return c;
+}
+#endif
+
+/******************************************************************************
+ * function:
  *         qat_create_sm4_cbc_cipher_meth(void)
  *
  * @param nid    [IN] - Cipher NID to be created
@@ -845,14 +994,14 @@ const EVP_CIPHER *qat_create_gcm_cipher_meth(int nid, int keylen)
 const EVP_CIPHER *qat_create_sm4_cbc_cipher_meth(int nid, int keylen)
 {
     EVP_CIPHER *c = NULL;
-#if (defined ENABLE_QAT_SW_SM4_CBC) || (defined ENABLE_QAT_HW_SM4_CBC)
+#if defined(ENABLE_QAT_SW_SM4_CBC) || defined(ENABLE_QAT_HW_SM4_CBC)
     int res = 1;
 #endif
 
     if ((c = EVP_CIPHER_meth_new(nid, SM4_BLOCK_SIZE, keylen)) == NULL) {
-            WARN("Failed to allocate cipher methods for nid %d\n", nid);
-            QATerr(QAT_F_QAT_CREATE_SM4_CBC_CIPHER_METH, QAT_R_SM4_MALLOC_FAILED);
-            return NULL;
+        WARN("Failed to allocate cipher methods for nid %d\n", nid);
+        QATerr(QAT_F_QAT_CREATE_SM4_CBC_CIPHER_METH, QAT_R_SM4_MALLOC_FAILED);
+        return NULL;
     }
 
 #ifdef ENABLE_QAT_HW_SM4_CBC
@@ -860,31 +1009,43 @@ const EVP_CIPHER *qat_create_sm4_cbc_cipher_meth(int nid, int keylen)
         (qat_hw_algo_enable_mask & ALGO_ENABLE_MASK_SM4_CBC)) {
         res &= EVP_CIPHER_meth_set_iv_length(c, SM4_CBC_IV_LEN);
         res &= EVP_CIPHER_meth_set_flags(c, QAT_CBC_FLAGS);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_init(c, qat_sm4_cbc_init);
         res &= EVP_CIPHER_meth_set_do_cipher(c, qat_sm4_cbc_do_cipher);
         res &= EVP_CIPHER_meth_set_cleanup(c, qat_sm4_cbc_cleanup);
-        res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(qat_sm4_ctx));
+#endif
         res &= EVP_CIPHER_meth_set_set_asn1_params(c, EVP_CIPH_FLAG_DEFAULT_ASN1 ?
                                                 NULL : EVP_CIPHER_set_asn1_iv);
         res &= EVP_CIPHER_meth_set_get_asn1_params(c, EVP_CIPH_FLAG_DEFAULT_ASN1 ?
                                                 NULL : EVP_CIPHER_get_asn1_iv);
+#ifndef QAT_OPENSSL_PROVIDER
         /* SM4 CBC has no ctrl function. */
         res &= EVP_CIPHER_meth_set_ctrl(c, NULL);
+#endif
+        qat_hw_sm4_cbc_offload = 1;
+        DEBUG("QAT HW SM4_CBC registration succeeded\n");
 
+#ifdef ENABLE_QAT_SW_SM4_CBC
+        if (qat_sw_offload && (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_SM4_CBC) &&
+            mbx_get_algo_info(MBX_ALGO_SM4)) {
+            res &= EVP_CIPHER_meth_set_impl_ctx_size(c,
+                                    sizeof(qat_sm4_ctx) + sizeof(SM4_CBC_CTX));
+            qat_sm4_cbc_coexist = 1;
+            DEBUG("QAT SM4_CBC HW&SW Coexistence is enabled \n");
+        }
+# endif
+        if (!qat_sm4_cbc_coexist) {
+            res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(qat_sm4_ctx));
+        }
         if (res == 0) {
             WARN("Failed to set SM4 methods for nid %d\n", nid);
             QATerr(QAT_F_QAT_CREATE_SM4_CBC_CIPHER_METH, QAT_R_SM4_SET_METHODS_FAILED);
-            EVP_CIPHER_meth_free(c);
+            qat_hw_sm4_cbc_offload = 0;
             return NULL;
         }
-
-        qat_hw_sm4_cbc_offload = 1;
-        DEBUG("QAT HW SM4_CBC registration succeeded\n");
     } else {
         qat_hw_sm4_cbc_offload = 0;
         DEBUG("OpenSSL SW SM4 CBC registration\n");
-        EVP_CIPHER_meth_free(c);
-        return (const EVP_CIPHER *)EVP_sm4_cbc();
     }
 #endif
 
@@ -894,18 +1055,21 @@ const EVP_CIPHER *qat_create_sm4_cbc_cipher_meth(int nid, int keylen)
         mbx_get_algo_info(MBX_ALGO_SM4)) {
         res &= EVP_CIPHER_meth_set_iv_length(c, SM4_IV_LEN);
         res &= EVP_CIPHER_meth_set_flags(c, SM4_CBC_CUSTOM_FLAGS);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_init(c, qat_sw_sm4_cbc_key_init);
         res &= EVP_CIPHER_meth_set_do_cipher(c, qat_sw_sm4_cbc_cipher);
         res &= EVP_CIPHER_meth_set_cleanup(c, qat_sw_sm4_cbc_cleanup);
+#endif
         res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(SM4_CBC_CTX));
         res &= EVP_CIPHER_meth_set_set_asn1_params(c, NULL);
         res &= EVP_CIPHER_meth_set_get_asn1_params(c, NULL);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_ctrl(c, NULL);
-
+#endif
         if (res == 0) {
             WARN("Failed to set SM4 methods for nid %d\n", nid);
             QATerr(QAT_F_QAT_CREATE_SM4_CBC_CIPHER_METH, QAT_R_SM4_SET_METHODS_FAILED);
-            EVP_CIPHER_meth_free(c);
+            qat_sw_sm4_cbc_offload = 0;
             return NULL;
         }
         
@@ -914,10 +1078,16 @@ const EVP_CIPHER *qat_create_sm4_cbc_cipher_meth(int nid, int keylen)
     } else {
         qat_sw_sm4_cbc_offload = 0;
         DEBUG("OpenSSL SW SM4 CBC registration\n");
-        EVP_CIPHER_meth_free(c);
-        return (const EVP_CIPHER *)EVP_sm4_cbc();
     }
 #endif
+
+    if ((qat_hw_sm4_cbc_offload == 0) && (qat_sw_sm4_cbc_offload == 0)) {
+        DEBUG("QAT_HW and QAT_SW SM4-CBC not supported! Using OpenSSL SW method\n");
+        EVP_CIPHER_meth_free(c);
+#if defined(ENABLE_QAT_HW_SM4_CBC) || defined(ENABLE_QAT_SW_SM4_CBC)
+        return (const EVP_CIPHER *)EVP_sm4_cbc();
+#endif
+    }
 
     return c;
 }
@@ -953,14 +1123,17 @@ const EVP_CIPHER *qat_create_sm4_gcm_cipher_meth(int nid, int keylen)
         }
         res &= EVP_CIPHER_meth_set_iv_length(c, QAT_SM4_TLS_TOTAL_IV_LEN);
         res &= EVP_CIPHER_meth_set_flags(c, CUSTOM_FLAGS);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_init(c, qat_sw_sm4_gcm_init);
         res &= EVP_CIPHER_meth_set_do_cipher(c, qat_sw_sm4_gcm_cipher);
         res &= EVP_CIPHER_meth_set_cleanup(c, qat_sw_sm4_gcm_cleanup);
+#endif
         res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(QAT_SM4_GCM_CTX));
         res &= EVP_CIPHER_meth_set_set_asn1_params(c, NULL);
         res &= EVP_CIPHER_meth_set_get_asn1_params(c, NULL);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_ctrl(c, qat_sw_sm4_gcm_ctrl);
-
+#endif
         if (0 == res) {
             WARN("Failed to set cipher methods for nid %d\n", NID_sm4_gcm);
             EVP_CIPHER_meth_free(c);
@@ -1005,13 +1178,18 @@ const EVP_CIPHER *qat_create_sm4_ccm_cipher_meth(int nid, int keylen)
         mbx_get_algo_info(MBX_ALGO_SM4)) {
 
         res &= EVP_CIPHER_meth_set_flags(c, CUSTOM_CCM_FLAGS);
+        res &= EVP_CIPHER_meth_set_iv_length(c, EVP_CCM_TLS_IV_LEN);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_init(c, qat_sw_sm4_ccm_init);
         res &= EVP_CIPHER_meth_set_do_cipher(c, qat_sw_sm4_ccm_do_cipher);
         res &= EVP_CIPHER_meth_set_cleanup(c, qat_sw_sm4_ccm_cleanup);
+#endif
         res &= EVP_CIPHER_meth_set_impl_ctx_size(c, sizeof(QAT_SM4_CCM_CTX));
         res &= EVP_CIPHER_meth_set_set_asn1_params(c, NULL);
         res &= EVP_CIPHER_meth_set_get_asn1_params(c, NULL);
+#ifndef QAT_OPENSSL_PROVIDER
         res &= EVP_CIPHER_meth_set_ctrl(c, qat_sw_sm4_ccm_ctrl);
+#endif
 
         if (0 == res) {
             WARN("Failed to set cipher methods for nid %d\n", NID_sm4_ccm);
@@ -1034,6 +1212,136 @@ const EVP_CIPHER *qat_create_sm4_ccm_cipher_meth(int nid, int keylen)
     return c;
 }
 #endif /* ENABLE_QAT_SW_SM4_CCM */
+
+#if defined(ENABLE_QAT_HW_SM2) || defined(ENABLE_QAT_SW_SM2)
+
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+static int pkey_ec_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
+{
+    int (*pkeygen) (EVP_PKEY_CTX *ctx, EVP_PKEY *pkey) = NULL;
+    if ((sw_sm2_pmeth = EVP_PKEY_meth_find(EVP_PKEY_EC)) == NULL) {
+        WARN("Failed to generate hw_pmeth\n");
+        return -1;
+    }
+
+    EVP_PKEY_meth_get_keygen((EVP_PKEY_METHOD *)sw_sm2_pmeth, NULL, &pkeygen);
+    pkeygen(ctx, pkey);
+    *(int *)pkey = EVP_PKEY_SM2;
+    return 1;
+}
+#endif
+
+#if defined(ENABLE_QAT_SW_SM2) && !defined(QAT_OPENSSL_PROVIDER)
+void qat_sm2_pkey_methods(void)
+{
+    EVP_PKEY_meth_set_init(_hidden_sm2_pmeth, mb_sm2_init);
+# ifdef QAT_OPENSSL_3 /* Only used for OpenSSL 3 legacy engine API */
+    EVP_PKEY_meth_set_keygen(_hidden_sm2_pmeth, NULL, pkey_ec_keygen);
+# endif
+    EVP_PKEY_meth_set_cleanup(_hidden_sm2_pmeth, mb_sm2_cleanup);
+    EVP_PKEY_meth_set_ctrl(_hidden_sm2_pmeth, mb_sm2_ctrl, NULL);
+    EVP_PKEY_meth_set_digest_custom(_hidden_sm2_pmeth, mb_digest_custom);
+    EVP_PKEY_meth_set_digestsign(_hidden_sm2_pmeth, mb_ecdsa_sm2_sign);
+    EVP_PKEY_meth_set_digestverify(_hidden_sm2_pmeth, mb_ecdsa_sm2_verify);
+}
+#endif
+
+EVP_PKEY_METHOD *qat_create_sm2_pmeth(void)
+{
+
+#if defined(ENABLE_QAT_HW_SM2) && defined(QAT_NTLS)
+    int (*pencrypt)(EVP_PKEY_CTX *ctx,
+                unsigned char *out, size_t *outlen,
+                const unsigned char *in, size_t inlen) = NULL;
+
+    int (*pdecrypt)(EVP_PKEY_CTX *ctx,
+                unsigned char *out, size_t *outlen,
+                const unsigned char *in, size_t inlen) = NULL;
+#endif
+# if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (_hidden_sm2_pmeth && (qat_hw_sm2_offload || qat_sw_sm2_offload || 
+                              qat_openssl3_sm2_fallback)) {
+#else
+    if (_hidden_sm2_pmeth && (qat_hw_sm2_offload || qat_sw_sm2_offload)) {
+#endif
+        if (!qat_reload_algo)
+            return _hidden_sm2_pmeth;
+        EVP_PKEY_meth_free(_hidden_sm2_pmeth);
+    }
+
+#ifndef QAT_OPENSSL_PROVIDER
+    if (sw_sm2_pmeth && !qat_hw_sm2_offload && !qat_reload_algo)
+        return (EVP_PKEY_METHOD *)sw_sm2_pmeth;
+
+    if ((_hidden_sm2_pmeth = EVP_PKEY_meth_new(EVP_PKEY_SM2, 0)) == NULL) {
+        WARN("Failed to generate pmeth\n");
+        return NULL;
+    }
+# ifndef QAT_OPENSSL_3
+    if ((sw_sm2_pmeth = EVP_PKEY_meth_find(EVP_PKEY_SM2)) == NULL) {
+        WARN("Failed to generate sw_pmeth\n");
+        return NULL;
+    }
+# endif
+# ifdef ENABLE_QAT_HW_SM2
+    if (qat_hw_offload && (qat_hw_algo_enable_mask & ALGO_ENABLE_MASK_SM2)) {
+        EVP_PKEY_meth_set_init(_hidden_sm2_pmeth, qat_sm2_init);
+# ifdef QAT_OPENSSL_3 /* Only used for OpenSSL 3 legacy engine API */
+        EVP_PKEY_meth_set_keygen(_hidden_sm2_pmeth, NULL, pkey_ec_keygen);
+# endif
+        EVP_PKEY_meth_set_copy(_hidden_sm2_pmeth, qat_sm2_copy);
+        EVP_PKEY_meth_set_cleanup(_hidden_sm2_pmeth, qat_sm2_cleanup);
+        EVP_PKEY_meth_set_ctrl(_hidden_sm2_pmeth, qat_sm2_ctrl, NULL);
+        EVP_PKEY_meth_set_digest_custom(_hidden_sm2_pmeth,
+                                        qat_sm2_digest_custom);
+        EVP_PKEY_meth_set_sign(_hidden_sm2_pmeth, NULL, qat_sm2_sign);
+        EVP_PKEY_meth_set_verify(_hidden_sm2_pmeth, NULL, qat_sm2_verify);
+#  ifdef QAT_NTLS
+        EVP_PKEY_meth_get_encrypt((EVP_PKEY_METHOD *)sw_sm2_pmeth, NULL, &pencrypt);
+        EVP_PKEY_meth_get_decrypt((EVP_PKEY_METHOD *)sw_sm2_pmeth, NULL, &pdecrypt);
+
+        EVP_PKEY_meth_set_encrypt(_hidden_sm2_pmeth, NULL, pencrypt);
+        EVP_PKEY_meth_set_decrypt(_hidden_sm2_pmeth, NULL, pdecrypt);
+#  endif
+        qat_hw_sm2_offload = 1;
+        DEBUG("QAT HW SM2 registration succeeded\n");
+    } else {
+        qat_hw_sm2_offload = 0;
+        DEBUG("QAT HW SM2 disabled\n");
+    }
+# endif /* ENABLE_QAT_HW_SM2 */
+
+# ifdef ENABLE_QAT_SW_SM2
+    if (qat_sw_offload && !qat_hw_sm2_offload &&
+        (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_SM2) &&
+        mbx_get_algo_info(MBX_ALGO_X25519)) {
+        qat_sm2_pkey_methods();
+        qat_sw_sm2_offload = 1;
+        DEBUG("QAT SW SM2 registration succeeded\n");
+    } else {
+        qat_sw_sm2_offload = 0;
+    }
+
+    if (!qat_sw_sm2_offload && !qat_hw_sm2_offload) {
+        DEBUG("QAT SW SM2 is disabled, using OpenSSL SW");
+#  ifndef QAT_OPENSSL_3
+        return (EVP_PKEY_METHOD *)sw_sm2_pmeth;
+#  else
+        /* Although QAT Engine supports software fallback to the default provider when
+        * using the OpenSSL 3 legacy engine API, if it fails during the registration
+        * phase, the pkey method cannot be set correctly because the OpenSSL3 legacy
+        * engine framework no longer provides a standard method for HKDF, PRF and SM2.
+        * https://github.com/openssl/openssl/issues/19047
+        */
+        qat_openssl3_sm2_fallback = 1;
+        qat_sm2_pkey_methods();
+#  endif
+    }
+# endif /* ENABLE_QAT_SW_SM2 */
+#endif    /* QAT_OPENSSL_PROVIDER */
+    return _hidden_sm2_pmeth;
+}
+#endif
 
 void qat_create_ciphers(void)
 {
@@ -1092,6 +1400,14 @@ void qat_create_ciphers(void)
             case NID_aes_256_cbc_hmac_sha256:
                 info[i].cipher = (EVP_CIPHER *)
                     qat_create_cipher_meth(info[i].nid, info[i].keylen);
+                break;
+# endif
+# ifdef ENABLE_QAT_HW_CCM
+            case NID_aes_128_ccm:
+            case NID_aes_192_ccm:
+            case NID_aes_256_ccm:
+                info[i].cipher = (EVP_CIPHER *)
+                    qat_create_ccm_cipher_meth(info[i].nid, info[i].keylen);
                 break;
 # endif
 #endif
@@ -1158,6 +1474,16 @@ void qat_free_ciphers(void)
                     EVP_CIPHER_meth_free(info[i].cipher);
                 break;
 #endif
+#ifdef ENABLE_QAT_HW_CCM
+            case NID_aes_128_ccm:
+#if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
+            case NID_aes_192_ccm:
+            case NID_aes_256_ccm:
+#endif
+                if (qat_hw_aes_ccm_offload)
+                    EVP_CIPHER_meth_free(info[i].cipher);
+                break;
+#endif
             }
             info[i].cipher = NULL;
         }
@@ -1168,8 +1494,10 @@ void qat_free_ciphers(void)
     qat_hw_aes_cbc_hmac_sha_offload = 0;
     qat_hw_sm4_cbc_offload = 0;
     qat_sw_sm4_cbc_offload = 0;
+    qat_sm4_cbc_coexist = 0;
     qat_sw_sm4_gcm_offload = 0;
     qat_sw_sm4_ccm_offload = 0;
+    qat_hw_aes_ccm_offload = 0;
 }
 
 /******************************************************************************
@@ -1627,4 +1955,3 @@ int qat_pkt_threshold_table_get_threshold(int nid)
 }
 # endif /* QAT_BORINGSSL */
 #endif
-

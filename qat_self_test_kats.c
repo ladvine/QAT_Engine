@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -140,7 +140,7 @@ int RSA_components_update(RSA *rsa, size_t size)
     BIGNUM *iqmp = NULL;
 
     if (size > 1024 && size <= 2048) {
-        /* bignumber format needed for RSA sturcture */
+        /* bignumber format needed for RSA structure */
         if (((n = BN_bin2bn(rsa_n, sizeof(rsa_n), NULL)) == NULL) ||
             ((e = BN_bin2bn(rsa_e, sizeof(rsa_e), NULL)) == NULL) ||
             ((d = BN_bin2bn(rsa_d, sizeof(rsa_d), NULL)) == NULL) ||
@@ -418,7 +418,10 @@ static int QAT_self_test_kdf(const ST_KAT_KDF *t, TEST_PARAMS *args,
 
     OSSL_SELF_TEST_onbegin(st, OSSL_SELF_TEST_TYPE_KAT_KDF, t->desc);
 
-    if (!strcmp(t->desc, "HKDF_256") || !strcmp(t->desc, "HKDF_384")) {
+    if (!strcmp(t->desc, "TLS13_KDF_EXTRACT_256")
+        || !strcmp(t->desc, "TLS13_KDF_EXPAND_256")
+        || !strcmp(t->desc, "TLS13_KDF_EXTRACT_384")
+        || !strcmp(t->desc, "TLS13_KDF_EXPAND_384")) {
         bld = OSSL_PARAM_BLD_new();
         if (bld == NULL) {
             printf("Error in memory creation for OSSL_PARAM_BLD\n");
@@ -432,7 +435,6 @@ static int QAT_self_test_kdf(const ST_KAT_KDF *t, TEST_PARAMS *args,
             ret = 0;
             goto err;
         }
-
         ctx = EVP_KDF_CTX_new(kdf);
         if (ctx == NULL) {
             printf("Error in kctx creation..\n");
@@ -462,7 +464,7 @@ static int QAT_self_test_kdf(const ST_KAT_KDF *t, TEST_PARAMS *args,
 
         if (EVP_KDF_derive(ctx, out, t->expected_len, params) <= 0)
             goto err;
-    }                           /* HKDF if */
+    }
 
     if (!strcmp(t->desc, "TLS12_PRF_256") || !strcmp(t->desc, "TLS12_PRF_384")) {
         *prf_out = out;
@@ -479,7 +481,13 @@ static int QAT_self_test_kdf(const ST_KAT_KDF *t, TEST_PARAMS *args,
             goto err;
     }
 
-    if (!strcmp(t->desc, "HKDF_256") || !strcmp(t->desc, "HKDF_384")) {
+    if (!strcmp(t->desc, "TLS13_KDF_EXTRACT_256")
+        || !strcmp(t->desc, "TLS13_KDF_EXPAND_256")
+        || !strcmp(t->desc, "TLS13_KDF_EXTRACT_384")
+        || !strcmp(t->desc, "TLS13_KDF_EXPAND_384")) {
+        DUMPL("Expected Secret Key", t->expected, t->expected_len);
+        DUMPL("Actual Secret Key", out, t->expected_len);
+
         if (memcmp(out, t->expected, t->expected_len) != 0)
             goto err;
     }
@@ -611,9 +619,13 @@ static int qat_self_test_kdfs(TEST_PARAMS *args, OSSL_LIB_CTX *libctx)
 
     for (i = 0; i < (int)OSSL_NELEM(st_kat_kdf_tests); ++i) {
         if ((qat_hw_hkdf_offload == 0
-             && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_256"))
+             && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXTRACT_256"))
             || (qat_hw_hkdf_offload == 0
-                && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_384"))
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXPAND_256"))
+            || (qat_hw_hkdf_offload == 0
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXTRACT_384"))
+            || (qat_hw_hkdf_offload == 0
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXPAND_384"))
             || (qat_hw_prf_offload == 0
                 && !strcmp(st_kat_kdf_tests[i].desc, "TLS12_PRF_256"))
             || (qat_hw_prf_offload == 0
@@ -657,7 +669,10 @@ static int qat_self_test_digests(TEST_PARAMS *args, OSSL_LIB_CTX *libctx)
             && !strcmp(st_kat_digest_tests[i].desc, "SHA3"))
             continue;
         if (qat_sw_sha_offload == 0
-            && !strcmp(st_kat_digest_tests[i].desc, "SHA2"))
+            && !strcmp(st_kat_digest_tests[i].desc, "SHA256"))
+            continue;
+        if (qat_sw_sha_offload == 0
+            && !strcmp(st_kat_digest_tests[i].desc, "SHA512"))
             continue;
 
         if (!QAT_self_test_digest(&st_kat_digest_tests[i], args, libctx))

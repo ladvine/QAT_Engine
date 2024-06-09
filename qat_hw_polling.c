@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
 /*****************************************************************************
  * @file qat_hw_polling.c
  *
- * This file provides an implemenation for polling in QAT engine
+ * This file provides an implementation for polling in QAT engine
  *
  *****************************************************************************/
 
@@ -71,12 +71,6 @@
 
 /* QAT includes */
 #ifdef QAT_HW
-# ifdef USE_QAT_CONTIG_MEM
-#  include "qae_mem_utils.h"
-# endif
-# ifdef USE_USDM_MEM
-#  include "qat_hw_usdm_inf.h"
-# endif
 # include "cpa.h"
 # include "cpa_cy_im.h"
 # include "cpa_types.h"

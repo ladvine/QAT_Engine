@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -145,6 +145,22 @@ typedef struct {
     int tls_aad_len;            /* TLS AAD length */
     ctr128_f ctr;
 } EVP_SM4_GCM_CTX;
+
+#ifdef QAT_OPENSSL_PROVIDER
+int qat_sw_sm4_gcm_init(void *ctx, const unsigned char *key, int keylen,
+        const unsigned char *iv, int ivlen, int enc);
+int qat_sw_sm4_gcm_ctrl(void *ctx, int type, int arg, void *ptr);
+int qat_sw_sm4_gcm_cipher(void *ctx, unsigned char *out, size_t *padlen,
+        size_t outsize, const unsigned char *in, size_t len);
+int qat_sw_sm4_gcm_cleanup(void *ctx);
+#else
+int qat_sw_sm4_gcm_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        const unsigned char *iv, int enc);
+int qat_sw_sm4_gcm_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void *ptr);
+int qat_sw_sm4_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        const unsigned char *in, size_t len);
+int qat_sw_sm4_gcm_cleanup(EVP_CIPHER_CTX *ctx);
+# endif
 
 void process_mb_sm4_gcm_encrypt_reqs(mb_thread_data *tlv);
 void process_mb_sm4_gcm_decrypt_reqs(mb_thread_data *tlv);

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -67,8 +67,12 @@
 #define QAT_SELF_TEST_DESC_SIGN_ECDSAP384 "ECDSAP384"
 #define QAT_SELF_TEST_DESC_KDF_TLS12_256_PRF "TLS12_PRF_256"
 #define QAT_SELF_TEST_DESC_KDF_TLS12_384_PRF "TLS12_PRF_384"
-#define QAT_SELF_TEST_DESC_KDF_HKDF_256 "HKDF_256"
-#define QAT_SELF_TEST_DESC_KDF_HKDF_384 "HKDF_384"
+#define QAT_SELF_TEST_DESC_KDF_TLS13_256_EXTRACT "TLS13_KDF_EXTRACT_256"
+#define QAT_SELF_TEST_DESC_KDF_TLS13_256_EXPAND "TLS13_KDF_EXPAND_256"
+#define QAT_SELF_TEST_DESC_KDF_TLS13_384_EXTRACT "TLS13_KDF_EXTRACT_384"
+#define QAT_SELF_TEST_DESC_KDF_TLS13_384_EXPAND "TLS13_KDF_EXPAND_384"
+#define QAT_SELF_TEST_DESC_MD_SHA_256 "SHA256"
+#define QAT_SELF_TEST_DESC_MD_SHA_512 "SHA512"
 
 /* used to store raw parameters for keys and algorithms */
 typedef struct st_kat_param_st {
@@ -176,6 +180,16 @@ static const unsigned char sha256_digest[] = {
     0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
     0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
 };
+
+static const unsigned char sha512_pt[] = "xyz";
+static const unsigned char sha512_digest[] = {
+   0x4a, 0x3e, 0xd8, 0x14, 0x7e, 0x37, 0x87, 0x6a, 0xdc, 0x8f, 0x76, 0x32,
+   0x8e, 0x5a, 0xbc, 0xc1, 0xb4, 0x70, 0xe6, 0xac, 0xfc, 0x18, 0xef, 0xea,
+   0x01, 0x35, 0xf9, 0x83, 0x60, 0x49, 0x53, 0xa5, 0x8e, 0x18, 0x3c, 0x1a,
+   0x60, 0x86, 0xe9, 0x1b, 0xa3, 0xe8, 0x21, 0xd9, 0x26, 0xf5, 0xfd, 0xeb,
+   0x37, 0x76, 0x1c, 0x7c, 0xa0, 0x32, 0x8a, 0x96, 0x3f, 0x5e, 0x92, 0x87,
+   0x06, 0x75, 0xb7, 0x28
+};
 static const unsigned char sha3_256_pt[] = { 0xe7, 0x37, 0x21, 0x05 };
 static const unsigned char sha3_256_digest[] = {
     0x3a, 0x42, 0xb6, 0x8a, 0xb0, 0x79, 0xf2, 0x8c, 0x4c, 0xa3, 0xc7, 0x52,
@@ -187,10 +201,16 @@ static const ST_KAT_DIGEST st_kat_digest_tests[] =
 {
 #ifdef ENABLE_QAT_SW_SHA2
     {
-         OSSL_SELF_TEST_DESC_MD_SHA2,
+         QAT_SELF_TEST_DESC_MD_SHA_256,
          "SHA256",
          ITM_STR(sha256_pt),
          ITM(sha256_digest),
+    },
+    {
+         QAT_SELF_TEST_DESC_MD_SHA_512,
+         "SHA512",
+         ITM_STR(sha512_pt),
+         ITM(sha512_digest),
     },
 #endif
 
@@ -299,52 +319,90 @@ static const ST_KAT_CIPHER st_kat_cipher_tests[] = {
     },
 };
 
-static const char hkdf_256_digest[] = "SHA256";
-static const unsigned char hkdf_256_secret[] = { 's', 'e', 'c', 'r', 'e', 't' };
-static const unsigned char hkdf_256_salt[] = { 's', 'a', 'l', 't' };
-static const unsigned char hkdf_256_info[] = { 'l', 'a', 'b', 'e', 'l' };
+/*TLS13-KDF self-test data for SHA256*/
+static const char tls13_kdf_digest[] = "SHA256";
+static int tls13_kdf_extract_mode = EVP_KDF_HKDF_MODE_EXTRACT_ONLY;
+static int tls13_kdf_expand_mode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
+static const unsigned char tls13_kdf_prefix[] = {
+    0x74, 0x6C, 0x73, 0x31, 0x33, 0x20          /* "tls13 " */
+};
+static const unsigned char tls13_kdf_client_early_secret_label[] = {
+    0x63, 0x20, 0x65, 0x20, 0x74, 0x72, 0x61, 0x66,
+    0x66, 0x69, 0x63                            /* "c e traffic"*/
+};
+static const unsigned char tls13_kdf_psk[] = {
+    0xF8, 0xAF, 0x6A, 0xEA, 0x2D, 0x39, 0x7B, 0xAF,
+    0x29, 0x48, 0xA2, 0x5B, 0x28, 0x34, 0x20, 0x06,
+    0x92, 0xCF, 0xF1, 0x7E, 0xEE, 0x91, 0x65, 0xE4,
+    0xE2, 0x7B, 0xAB, 0xEE, 0x9E, 0xDE, 0xFD, 0x05
+};
+static const unsigned char tls13_kdf_client_hello_hash[] = {
+    0x7c, 0x92, 0xf6, 0x8b, 0xd5, 0xbf, 0x36, 0x38,
+    0xea, 0x33, 0x8a, 0x64, 0x94, 0x72, 0x2e, 0x1b,
+    0x44, 0x12, 0x7e, 0x1b, 0x7e, 0x8a, 0xad, 0x53,
+    0x5f, 0x23, 0x22, 0xa6, 0x44, 0xff, 0x22, 0xb3
+};
 
-static const ST_KAT_PARAM hkdf_params[] = {
-    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, hkdf_256_digest),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, hkdf_256_secret),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_SALT, hkdf_256_salt),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_INFO, hkdf_256_info),
+static const unsigned char tls13_kdf_early_secret[] = {
+    0x15, 0x3B, 0x63, 0x94, 0xA9, 0xC0, 0x3C, 0xF3,
+    0xF5, 0xAC, 0xCC, 0x6E, 0x45, 0x5A, 0x76, 0x93,
+    0x28, 0x11, 0x38, 0xA1, 0xBC, 0xFA, 0x38, 0x03,
+    0xC2, 0x67, 0x35, 0xDD, 0x11, 0x94, 0xD2, 0x16
+};
+
+static const unsigned char tls13_kdf_client_early_traffic_secret[] = {
+    0xC8, 0x05, 0x83, 0xA9, 0x0E, 0x99, 0x5C, 0x48,
+    0x96, 0x00, 0x49, 0x2A, 0x5D, 0xA6, 0x42, 0xE6,
+    0xB1, 0xF6, 0x79, 0xBA, 0x67, 0x48, 0x28, 0x79,
+    0x2D, 0xF0, 0x87, 0xB9, 0x39, 0x63, 0x61, 0x71
+};
+static const ST_KAT_PARAM tls13_kdf_early_secret_params[] = {
+    ST_KAT_PARAM_INT(OSSL_KDF_PARAM_MODE, tls13_kdf_extract_mode),
+    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, tls13_kdf_digest),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, tls13_kdf_psk),
     ST_KAT_PARAM_END()
 };
-static const unsigned char hkdf_expected[] = {
-    0x2a, 0xc4, 0x36, 0x9f, 0x52, 0x59, 0x96, 0xf8,
-    0xde, 0x13
-};
-
-static const char hkdf_384_digest[] = "SHA384";
-static const unsigned char hkdf_384_secret[] = {
-    0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
-    0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b,
-    0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b
-};
-static const unsigned char hkdf_384_salt[] = {
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c
-};
-static const unsigned char hkdf_384_info[] = {
-    0xf0, 0xf1 ,0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
-    0xf8, 0xf9
-};
-
-static const ST_KAT_PARAM hkdf_384_params[] = {
-    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, hkdf_384_digest),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, hkdf_384_secret),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_SALT, hkdf_384_salt),
-    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_INFO, hkdf_384_info),
+static const ST_KAT_PARAM tls13_kdf_client_early_secret_params[] = {
+    ST_KAT_PARAM_INT(OSSL_KDF_PARAM_MODE, tls13_kdf_expand_mode),
+    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, tls13_kdf_digest),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, tls13_kdf_early_secret),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_DATA, tls13_kdf_client_hello_hash),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_PREFIX, tls13_kdf_prefix),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_LABEL,
+                       tls13_kdf_client_early_secret_label),
     ST_KAT_PARAM_END()
-
 };
 
-static const unsigned char hkdf_384_expected[] = {
-    0x9b, 0x50, 0x97, 0xa8, 0x60, 0x38, 0xb8, 0x05,
-    0x30, 0x90, 0x76, 0xa4, 0x4b, 0x3a, 0x9f, 0x38,
-    0x06, 0x3e, 0x25, 0xb5, 0x16, 0xdc, 0xbf, 0x36,
-    0x9f, 0x39, 0x4c, 0xfa, 0xb4, 0x36, 0x85, 0xf7,
+/*TLS13-KDF self data for SHA384*/
+static const char tls13_kdf_digest_384[] = "SHA384";
+static const unsigned char tls13_kdf_early_secret_384[] = {
+    0x93, 0x7b, 0xba, 0xbb, 0x09, 0x3b, 0xec, 0x63,
+    0xe7, 0xce, 0xd5, 0x8d, 0x90, 0xf3, 0xf7, 0x72,
+    0xeb, 0x37, 0x41, 0x87, 0xea, 0x7d, 0x6f, 0x03,
+    0xc1, 0xfe, 0xe4, 0xe1, 0xac, 0xcb, 0x13, 0x1e
+};
+static const unsigned char tls13_kdf_client_early_traffic_secret_384[] = {
+    0x2a, 0x5a, 0x1b, 0xe5, 0x79, 0x43, 0xc5, 0x22,
+    0xc4, 0x9f, 0xa2, 0x7d, 0xe5, 0xef, 0x09, 0xca,
+    0x3e, 0x66, 0x8f, 0x9c, 0xaf, 0x75, 0x1c, 0x2c,
+    0xc7, 0x36, 0x0e, 0xd7, 0xe6, 0x19, 0x68, 0x98
+};
+
+static const ST_KAT_PARAM tls13_kdf_early_secret_params_sha384[] = {
+    ST_KAT_PARAM_INT(OSSL_KDF_PARAM_MODE, tls13_kdf_extract_mode),
+    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, tls13_kdf_digest_384),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, tls13_kdf_psk),
+    ST_KAT_PARAM_END()
+};
+static const ST_KAT_PARAM tls13_kdf_client_early_secret_params_sha384[] = {
+    ST_KAT_PARAM_INT(OSSL_KDF_PARAM_MODE, tls13_kdf_expand_mode),
+    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, tls13_kdf_digest_384),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, tls13_kdf_early_secret_384),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_DATA, tls13_kdf_client_hello_hash),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_PREFIX, tls13_kdf_prefix),
+    ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_LABEL,
+                       tls13_kdf_client_early_secret_label),
+    ST_KAT_PARAM_END()
 };
 
 static const char sskdf_digest[] = "SHA224";
@@ -590,16 +648,28 @@ static const ST_KAT_KDF st_kat_kdf_tests[] =
 #endif
 #ifdef ENABLE_QAT_HW_HKDF
     {
-        QAT_SELF_TEST_DESC_KDF_HKDF_256,
-        OSSL_KDF_NAME_HKDF,
-        hkdf_params,
-        ITM(hkdf_expected)
+        QAT_SELF_TEST_DESC_KDF_TLS13_256_EXTRACT,
+        OSSL_KDF_NAME_TLS1_3_KDF,
+        tls13_kdf_early_secret_params,
+        ITM(tls13_kdf_early_secret)
     },
     {
-        QAT_SELF_TEST_DESC_KDF_HKDF_384,
-        OSSL_KDF_NAME_HKDF,
-        hkdf_384_params,
-        ITM(hkdf_384_expected)
+        QAT_SELF_TEST_DESC_KDF_TLS13_256_EXPAND,
+        OSSL_KDF_NAME_TLS1_3_KDF,
+        tls13_kdf_client_early_secret_params,
+        ITM(tls13_kdf_client_early_traffic_secret)
+    },
+    {
+        QAT_SELF_TEST_DESC_KDF_TLS13_384_EXTRACT,
+        OSSL_KDF_NAME_TLS1_3_KDF,
+        tls13_kdf_early_secret_params_sha384,
+        ITM(tls13_kdf_early_secret_384)
+    },
+    {
+        QAT_SELF_TEST_DESC_KDF_TLS13_384_EXPAND,
+        OSSL_KDF_NAME_TLS1_3_KDF,
+        tls13_kdf_client_early_secret_params_sha384,
+        ITM(tls13_kdf_client_early_traffic_secret_384)
     },
 #endif
 };

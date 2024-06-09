@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -2710,7 +2710,7 @@ static int run_rsa(void *args)
      * pass input size to support RSA module size
      */
     if (size <= 1024) {
-        /* bignumber format needed for RSA sturcture */
+        /* bignumber format needed for RSA structure */
         DEBUG("\n RSA module size 1024 \n");
 
         if (pad == RSA_NO_PADDING)
@@ -2766,7 +2766,7 @@ static int run_rsa(void *args)
     }
 
     if (size > 1024 && size <= 2048) {
-        /* bignumber format needed for RSA sturcture */
+        /* bignumber format needed for RSA structure */
         DEBUG("\n RSA module size 2048 \n");
 
         if (pad == RSA_NO_PADDING)
@@ -2822,7 +2822,7 @@ static int run_rsa(void *args)
     }
 
     if (size > 2048 && size <= 4096) {
-        /* bignumber format needed for RSA sturcture */
+        /* bignumber format needed for RSA structure */
         DEBUG("\n RSA module size 4096 \n");
 
         if (pad == RSA_NO_PADDING)
@@ -2878,7 +2878,7 @@ static int run_rsa(void *args)
     }
 
      if (size >4096) {
-        /* bignumber format needed for RSA sturcture */
+        /* bignumber format needed for RSA structure */
         DEBUG("\n RSA module size 8192 \n");
 
         if (pad == RSA_NO_PADDING)
@@ -3083,7 +3083,6 @@ static int run_rsa(void *args)
 
 #ifdef QAT_OPENSSL_PROVIDER
     EVP_PKEY *rsa_key = NULL;
-    ctext = OPENSSL_malloc(EVP_PKEY_get_size(rsa_key));
     RAND_bytes(HashData, 36);
     RAND_bytes(expectedPtext, 36);
 
@@ -3093,7 +3092,12 @@ static int run_rsa(void *args)
                  break;
         }
         const unsigned char *R = rsa_keys[testnum].data;
-        rsa_key = d2i_PrivateKey(EVP_PKEY_RSA, NULL, &R, rsa_keys[testnum].length);
+        if (size == 8192) {
+            rsa_key=EVP_PKEY_new();
+            EVP_PKEY_assign_RSA(rsa_key, key);
+        } else {
+            rsa_key = d2i_PrivateKey(EVP_PKEY_RSA, NULL, &R, rsa_keys[testnum].length);
+        }
 
         /*
          * For functional tests we need to run verify anyway,
@@ -3178,6 +3182,17 @@ static int run_rsa(void *args)
                 goto err;
             }
 
+	    if (clen <= 0) {
+                WARN("Cipher length less than zero\n");
+		ret = 0;
+		goto err;
+	    }
+	    ctext = OPENSSL_malloc(clen);
+	    if (ctext == NULL) {
+                WARN("Failed to allocate memory for ctext\n");
+		ret = 0;
+		goto err;
+	    }
             status = EVP_PKEY_encrypt(enc_ctx, ctext, &clen, expectedPtext, 36);
 
             if (status <= 0) {
@@ -3257,6 +3272,7 @@ err:
         OPENSSL_free(ptext);
     if (ctext)
         OPENSSL_free(ctext);
+    RSA_free(key);
 #endif
     if (sig)
         OPENSSL_free(sig);
@@ -3266,7 +3282,6 @@ err:
         OPENSSL_free(HashData);
     if (expectedPtext)
         OPENSSL_free(expectedPtext);
-    RSA_free(key);
     return ret;
 }
 

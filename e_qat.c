@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -93,6 +93,7 @@
 # include "qat_hw_dsa.h"
 # include "qat_hw_dh.h"
 # include "qat_hw_gcm.h"
+# include "qat_hw_ccm.h"
 #endif /* QAT_BORINGSSL */
 
 /* QAT includes */
@@ -136,7 +137,7 @@
 #include <openssl/crypto.h>
 
 #if defined(QAT_SW) || defined(QAT_SW_IPSEC)
-/* __cpuid(unsinged int info[4], unsigned int leaf, unsigned int subleaf); */
+/* __cpuid(unsigned int info[4], unsigned int leaf, unsigned int subleaf); */
 # define __cpuid(x, y, z) \
 	        asm volatile("cpuid" : "=a"(x[0]), "=b"(x[1]), "=c"(x[2]), "=d"(x[3]) : "a"(y), "c"(z))
 
@@ -163,16 +164,23 @@ int qat_fips_kat_test;
 const char *engine_qat_id = STR(QAT_ENGINE_ID);
 #if defined(QAT_HW) && defined(QAT_SW)
 const char *engine_qat_name =
-    "Reference implementation of QAT crypto engine(qat_hw & qat_sw) v1.2.0";
+    "Reference implementation of QAT crypto engine(qat_hw & qat_sw) v1.6.0";
 #elif QAT_HW
 const char *engine_qat_name =
-    "Reference implementation of QAT crypto engine(qat_hw) v1.2.0";
+    "Reference implementation of QAT crypto engine(qat_hw) v1.6.0";
 #else
 const char *engine_qat_name =
-    "Reference implementation of QAT crypto engine(qat_sw) v1.2.0";
+    "Reference implementation of QAT crypto engine(qat_sw) v1.6.0";
 #endif
 unsigned int engine_inited = 0;
 int fallback_to_openssl = 0;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+int qat_openssl3_prf_fallback = 0;
+int qat_openssl3_hkdf_fallback = 0;
+int qat_openssl3_sm2_fallback = 0;
+int qat_openssl3_sm3_fallback = 0;
+int qat_openssl3_sha_fallback = 0;
+#endif
 int fallback_to_qat_sw = 0; /* QAT HW initialize fail, offload to QAT SW. */
 int qat_hw_offload = 0;
 int qat_sw_offload = 0;
@@ -192,6 +200,7 @@ int qat_hw_chacha_poly_offload = 0;
 int qat_hw_aes_cbc_hmac_sha_offload = 0;
 int qat_hw_sm4_cbc_offload = 0;
 int qat_sw_sm2_offload = 0;
+int qat_hw_sm2_offload = 0;
 int qat_hw_sha_offload = 0;
 int qat_hw_sm3_offload = 0;
 # ifdef ENABLE_QAT_FIPS
@@ -206,6 +215,7 @@ int qat_sw_sm3_offload = 0;
 int qat_sw_sm4_cbc_offload = 0;
 int qat_sw_sm4_gcm_offload = 0;
 int qat_sw_sm4_ccm_offload = 0;
+int qat_hw_aes_ccm_offload = 0;
 int qat_hw_keep_polling = 1;
 int qat_sw_keep_polling = 1;
 int enable_external_polling = 0;
@@ -214,7 +224,7 @@ pthread_mutex_t qat_engine_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t qat_polling_thread;
 sem_t hw_polling_thread_sem;
 
-/* QAT number of inflight requests */
+/* QAT number of in-flight requests */
 int num_requests_in_flight = 0;
 int num_asym_requests_in_flight = 0;
 int num_kdf_requests_in_flight = 0;
@@ -229,10 +239,15 @@ pthread_t qat_timer_poll_func_thread = 0;
 int cleared_to_start = 0;
 pthread_mutex_t qat_poll_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t qat_poll_condition = PTHREAD_COND_INITIALIZER;
+int qat_cond_wait_started = 0;
 
 #ifdef QAT_HW
 # define QAT_CONFIG_SECTION_NAME_SIZE 64
+# if defined(QAT_HW_FBSD_INTREE)
+char qat_config_section_name[QAT_CONFIG_SECTION_NAME_SIZE] = "SSL";
+# else
 char qat_config_section_name[QAT_CONFIG_SECTION_NAME_SIZE] = "SHIM";
+# endif
 char *ICPConfigSectionName_libcrypto = qat_config_section_name;
 int enable_inline_polling = 0;
 int enable_event_driven_polling = 0;
@@ -246,6 +261,8 @@ CpaInstanceHandle *qat_instance_handles = NULL;
 Cpa16U qat_num_instances = 0;
 Cpa16U qat_asym_num_instance = 0;
 Cpa16U qat_sym_num_instance = 0;
+Cpa16U qat_svm_num_instance = 0;
+Cpa16U qat_contig_num_instance = 0;
 Cpa32U qat_num_devices = 0;
 pthread_key_t thread_local_variables;
 pthread_mutex_t qat_instance_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -256,10 +273,7 @@ int qat_epoll_timeout = QAT_EPOLL_TIMEOUT_IN_MS;
 int qat_max_retry_count = QAT_CRYPTO_NUM_POLLING_RETRIES;
 unsigned int qat_map_sym_inst[QAT_MAX_CRYPTO_INSTANCES] = {'\0'};
 unsigned int qat_map_asym_inst[QAT_MAX_CRYPTO_INSTANCES] = {'\0'};
-# ifdef QAT_HW_SET_INSTANCE_THREAD
-long int threadId[QAT_MAX_CRYPTO_THREADS] = {'\0'};
-int threadCount = 0;
-# endif
+unsigned int qat_map_svm_inst[QAT_MAX_CRYPTO_INSTANCES] = {'\0'};
 #endif
 
 #ifdef QAT_SW
@@ -292,6 +306,7 @@ int qat_rsa_coexist = 0;
 int qat_ecdh_coexist = 0;
 int qat_ecdsa_coexist = 0;
 int qat_ecx_coexist = 0;
+int qat_sm4_cbc_coexist = 0;
 __thread unsigned int qat_sw_rsa_priv_req = 0;
 __thread unsigned int qat_sw_rsa_pub_req = 0;
 __thread unsigned int qat_sw_ecdsa_sign_req = 0;
@@ -299,6 +314,7 @@ __thread unsigned int qat_sw_ecdh_keygen_req = 0;
 __thread unsigned int qat_sw_ecdh_derive_req = 0;
 __thread unsigned int qat_sw_ecx_keygen_req = 0;
 __thread unsigned int qat_sw_ecx_derive_req = 0;
+__thread unsigned int qat_sw_sm4_cbc_cipher_req;
 __thread int num_rsa_priv_retry = 0;
 __thread int num_rsa_pub_retry = 0;
 __thread int num_ecdsa_sign_retry = 0;
@@ -306,6 +322,7 @@ __thread int num_ecdh_keygen_retry = 0;
 __thread int num_ecdh_derive_retry = 0;
 __thread int num_ecx_keygen_retry = 0;
 __thread int num_ecx_derive_retry = 0;
+__thread int num_sm4_cbc_cipher_retry = 0;
 __thread unsigned long long num_rsa_hw_priv_reqs = 0;
 __thread unsigned long long num_rsa_sw_priv_reqs = 0;
 __thread unsigned long long num_rsa_hw_pub_reqs = 0;
@@ -320,6 +337,8 @@ __thread unsigned long long num_ecx_hw_keygen_reqs = 0;
 __thread unsigned long long num_ecx_sw_keygen_reqs = 0;
 __thread unsigned long long num_ecx_hw_derive_reqs = 0;
 __thread unsigned long long num_ecx_sw_derive_reqs = 0;
+__thread unsigned long long num_sm4_cbc_hw_cipher_reqs = 0;
+__thread unsigned long long num_sm4_cbc_sw_cipher_reqs = 0;
 
 #ifndef QAT_BORINGSSL
 const ENGINE_CMD_DEFN qat_cmd_defns[] = {
@@ -497,6 +516,7 @@ static int qat_engine_destroy(ENGINE *e)
     qat_hw_hkdf_offload = 0;
     qat_sw_ecx_offload = 0;
     qat_sw_sm2_offload = 0;
+    qat_hw_sm2_offload = 0;
     qat_sw_sm3_offload = 0;
     qat_sw_sm4_cbc_offload = 0;
     qat_sw_sm4_gcm_offload = 0;
@@ -587,6 +607,7 @@ int qat_engine_init(ENGINE *e)
         if (!qat_hw_init(e)) {
 # ifdef ENABLE_QAT_FIPS
             fprintf(stderr, "QAT_HW initialization Failed\n");
+            qat_pthread_mutex_unlock();
             return 0;
 # else
 #  ifdef QAT_SW /* Co-Existence mode: Don't return failure when QAT HW initialization Failed. */
@@ -607,6 +628,7 @@ int qat_engine_init(ENGINE *e)
         if (!qat_sw_init(e)) {
 # ifdef ENABLE_QAT_FIPS
             fprintf(stderr, "QAT_SW initialization Failed\n");
+            qat_pthread_mutex_unlock();
             return 0;
 # else
             WARN("QAT SW initialization Failed, switching to OpenSSL.\n");
@@ -643,6 +665,9 @@ int qat_engine_finish_int(ENGINE *e, int reset_globals)
           num_ecx_derive_retry, num_ecx_hw_derive_reqs, num_ecx_sw_derive_reqs);
     DEBUG("ECDSA sign retries: %d, HW requests: %lld, SW requests: %lld\n",
           num_ecdsa_sign_retry, num_ecdsa_hw_sign_reqs, num_ecdsa_sw_sign_reqs);
+    DEBUG("SM4-CBC retries: %d, HW requests: %lld, SW requests: %lld\n",
+          num_sm4_cbc_cipher_retry, num_sm4_cbc_hw_cipher_reqs,
+          num_sm4_cbc_sw_cipher_reqs);
 
     qat_pthread_mutex_lock();
 
@@ -663,6 +688,13 @@ int qat_engine_finish_int(ENGINE *e, int reset_globals)
         qat_hw_offload = 0;
         qat_sw_offload = 0;
         fallback_to_openssl = 0;
+#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+	qat_openssl3_prf_fallback = 0;
+	qat_openssl3_hkdf_fallback = 0;
+	qat_openssl3_sm2_fallback = 0;
+	qat_openssl3_sm3_fallback = 0;
+	qat_openssl3_sha_fallback = 0;
+#endif
         fallback_to_qat_sw = 0;
     }
     qat_pthread_mutex_unlock();
@@ -727,14 +759,15 @@ int qat_engine_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f) (void))
             BREAK_IF(!enable_external_polling, "POLL failed as external polling is not enabled\n");
             BREAK_IF(p == NULL, "POLL failed as the input parameter was NULL\n");
 #ifdef QAT_HW
-            if (qat_hw_offload) {
+            if (qat_hw_offload && !fallback_to_qat_sw) {
                 BREAK_IF(qat_instance_handles == NULL, "POLL failed as no instances are available\n");
                 *(int *)p = (int)poll_instances();
             }
 #endif
 
 #ifdef QAT_SW
-            *(int *)p = qat_sw_poll();
+            if (qat_sw_offload)
+                *(int *)p = qat_sw_poll();
 #endif
         break;
 
@@ -952,14 +985,17 @@ int qat_engine_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f) (void))
         case QAT_CMD_HEARTBEAT_POLL:
 # if !defined(__FreeBSD__) && !defined(QAT_HW_INTREE)
         BREAK_IF(!engine_inited, "HEARTBEAT_POLL failed as engine is not initialized\n");
-        BREAK_IF(qat_instance_handles == NULL,
-                "HEARTBEAT_POLL failed as no instances are available\n");
         BREAK_IF(!enable_external_polling,
                 "HEARTBEAT_POLL failed as external polling is not enabled\n");
         BREAK_IF(p == NULL, "HEARTBEAT_POLL failed as the input parameter was NULL\n");
 
-        *(int *)p = (int)poll_heartbeat();
-        CRYPTO_QAT_LOG("QAT Engine Heartbeat Poll - %s\n", __func__);
+        if (qat_instance_handles != NULL) {
+            *(int *)p = (int)poll_heartbeat();
+            CRYPTO_QAT_LOG("QAT Engine Heartbeat Poll - %s\n", __func__);
+        } else if (!fallback_to_qat_sw) {
+            WARN("HEARTBEAT_POLL failed as no instances are available\n");
+            retVal = 0;
+        }
 # else
         WARN("QAT_CMD_HEARTBEAT_POLL is not supported\n");
         retVal = 0;
@@ -1019,6 +1055,48 @@ int qat_engine_ctrl(ENGINE *e, int cmd, long i, void *p, void (*f) (void))
     return retVal;
 }
 
+#ifdef ENABLE_QAT_HW_KPT
+EVP_PKEY *qat_engine_load_privkey(ENGINE *e, const char *key_id, UI_METHOD *ui_method, void *callback_data)
+{
+    EVP_PKEY *pkey = NULL;
+    CpaStatus status = CPA_STATUS_SUCCESS;
+    CpaCyCapabilitiesInfo CapInfo;
+    int instNum = 0;
+    
+    DEBUG("Begin qat_engine_load_privkey\n");
+
+    if (access(key_id, F_OK)) {
+        WARN("File %s does not exist\n", key_id);
+        goto error;
+    }
+
+    /* Query KPT capability */
+    for (instNum = 0; instNum < qat_num_instances; instNum++) {
+        status = cpaCyQueryCapabilities(qat_instance_handles[instNum], &CapInfo);
+        if (CPA_STATUS_SUCCESS != status || CPA_FALSE == CapInfo.kptSupported) {
+            WARN("KPT is not supported on device %d\n", 
+                qat_instance_details[instNum].qat_instance_info.physInstId.packageId);
+            goto error;
+        }
+    }
+
+    pkey = qat_hw_kpt_load_privkey(e, key_id);
+    if (pkey == NULL) {
+        WARN("qat_hw_kpt_load_privkey failed\n");
+        goto error;
+    }
+
+    kpt_enabled = 1;
+
+    DEBUG("Finish qat_engine_load_privkey\n");
+    return pkey;
+
+error:
+    WARN("Error in qat_engine_load_privkey\n");
+    return NULL;
+}
+#endif
+
 /******************************************************************************
  * function:
  *         bind_qat(ENGINE *e,
@@ -1050,7 +1128,7 @@ int bind_qat(ENGINE *e, const char *id)
 
     /* For QAT_HW, Check if the QAT_HW device is available */
 #ifdef QAT_HW
-# if defined(QAT20_OOT) || defined(__FreeBSD__)
+# if !defined(QAT_HW_INTREE) && (defined(QAT20_OOT) || defined(__FreeBSD__))
     if (icp_adf_get_numDevices(&dev_count) == CPA_STATUS_SUCCESS) {
         if (dev_count > 0) {
             qat_hw_offload = 1;
@@ -1126,10 +1204,10 @@ int bind_qat(ENGINE *e, const char *id)
         return ret;
     }
 
-     if (!ENGINE_set_pkey_meths(e, qat_pkey_methods)) {
-          WARN("ENGINE_set_pkey_meths failed\n");
-          return ret;
-     }
+    if (!ENGINE_set_pkey_meths(e, qat_pkey_methods)) {
+         WARN("ENGINE_set_pkey_meths failed\n");
+         return ret;
+    }
 
 #  ifndef QAT_BORINGSSL
     qat_create_digest_meth();
@@ -1153,6 +1231,9 @@ int bind_qat(ENGINE *e, const char *id)
     ret &= ENGINE_set_init_function(e, qat_engine_init);
     ret &= ENGINE_set_ctrl_function(e, qat_engine_ctrl);
     ret &= ENGINE_set_finish_function(e, qat_engine_finish);
+#ifdef ENABLE_QAT_HW_KPT
+    ret &= ENGINE_set_load_privkey_function(e, qat_engine_load_privkey);
+#endif
     ret &= ENGINE_set_cmd_defns(e, qat_cmd_defns);
     if (ret == 0) {
         fprintf(stderr, "Engine failed to register init, finish or destroy functions\n");
@@ -1203,6 +1284,10 @@ int bind_qat(ENGINE *e, const char *id)
 # ifdef ENABLE_QAT_HW_SHA3
         qat_hw_sha_offload = 1;
         INFO("QAT_HW SHA3 for Provider Enabled\n");
+# endif
+# ifdef ENABLE_QAT_HW_SM3
+        qat_hw_sm3_offload = 1;
+        INFO("QAT_HW SM3 for Provider Enabled\n");
 # endif
 # ifdef ENABLE_QAT_HW_GCM
         if (!qat_sw_gcm_offload) {
@@ -1273,6 +1358,30 @@ int bind_qat(ENGINE *e, const char *id)
     if (qat_hw_gcm_offload && !qat_sw_gcm_offload)
         INFO("QAT_HW GCM for Provider Enabled\n");
 # endif
+
+# ifdef ENABLE_QAT_SW_SM4_GCM
+    if (qat_sw_sm4_gcm_offload)
+        INFO("QAT_SW SM4-GCM for Provider Enabled\n");
+# endif
+# ifdef ENABLE_QAT_SW_SM4_CCM
+    if (qat_sw_sm4_ccm_offload)
+        INFO("QAT_SW SM4-CCM for Provider Enabled\n");
+# endif
+# if defined(ENABLE_QAT_HW_SM4_CBC) || defined(ENABLE_QAT_SW_SM4_CBC)
+    if (qat_sw_sm4_cbc_offload && !qat_hw_sm4_cbc_offload)
+        INFO("QAT_SW SM4-CBC for Provider Enabled\n");
+
+    if (qat_hw_sm4_cbc_offload && !qat_sw_sm4_cbc_offload)
+        INFO("QAT_HW SM4-CBC for Provider Enabled\n");
+# endif
+# ifdef ENABLE_QAT_SW_SM3
+        qat_sw_sm3_offload = 1;
+        INFO("QAT_SW SM3 for Provider Enabled\n");
+# endif
+# ifdef ENABLE_QAT_HW_CCM
+        qat_hw_aes_ccm_offload = 1;
+        INFO("QAT_HW AES-CCM for Provider Enabled\n");
+# endif
 #endif
 
 #ifndef QAT_BORINGSSL
@@ -1322,7 +1431,7 @@ static ENGINE *engine_qat(void)
     DEBUG("- Starting\n");
 
     /* For boringssl enabled, no API like ENGINE_add to add a new engine to
-     * engine list, so just return existing gobal engine pointer
+     * engine list, so just return existing global engine pointer
      */
     if (ENGINE_QAT_PTR_GET()) {
         return ENGINE_QAT_PTR_GET();

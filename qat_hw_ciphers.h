@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -149,6 +149,7 @@ typedef struct qat_chained_ctx_t {
 
     /* QAT Session Params */
     int inst_num;
+    int qat_svm;
     CpaCySymSessionSetupData *session_data;
     CpaCySymSessionCtx session_ctx;
     int init_flags;

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -77,4 +77,9 @@ int qat_engine_ecdh_compute_key(unsigned char **out, size_t *outlen,
                                 const EC_POINT *pub_key, const EC_KEY *ecdh);
 int qat_ecdh_generate_key(EC_KEY *ecdh);
 # endif
+
+# ifdef ENABLE_QAT_HW_SM2
+EVP_PKEY_METHOD *qat_sm2_pmeth(void);
+# endif
+
 #endif /* QAT_HW_EC_H */

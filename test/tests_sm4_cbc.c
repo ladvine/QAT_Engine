@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -45,6 +45,9 @@
 #include <openssl/async.h>
 #include <openssl/objects.h>
 #include <openssl/engine.h>
+#ifdef QAT_OPENSSL_3
+# include <openssl/core_names.h>
+#endif
 
 #include "tests.h"
 
@@ -159,7 +162,7 @@ static inline int set_pkt_threshold(ENGINE *e, const char* cipher, int thr)
 /*
  *  setup_ctx:
  *      Setup cipher context ready to be used in a cipher operation.
- *      It also sets up additonal information required i.e. tls headers.
+ *      It also sets up additional information required i.e. tls headers.
  */
 static EVP_CIPHER_CTX *setup_ctx(const test_info *t, int enc, int e)
 {
@@ -221,7 +224,7 @@ static int perform_op(EVP_CIPHER_CTX *ctx, unsigned char **in,
     }
 
     if (*out == NULL) {
-        *out = outb = OPENSSL_malloc(size);
+        *out = outb = inb;
         if (outb == NULL)
             goto err;
     } else {
@@ -370,8 +373,6 @@ static int encrypt_and_compare(const test_info *t, int *buflen)
 
  err:
     OPENSSL_free(textbuf);
-    OPENSSL_free(eng_buf);
-    OPENSSL_free(sw_buf);
     return ret;
 }
 
@@ -379,7 +380,7 @@ static int encrypt_and_compare(const test_info *t, int *buflen)
  * test_crypto_op :
  *      test chained ciphers crypto operation.
  *      depending on the enc_imp/dec_imp, use either a engine or
- *      software implemention to perform encryption/decryption.
+ *      software implementation to perform encryption/decryption.
  *      if DEC_imp(ENC_imp(text)) = text, then report success else
  *      fail.
  */
@@ -421,8 +422,6 @@ static int test_crypto_op(const test_info *t, int enc_imp, int dec_imp)
 
  err:
     OPENSSL_free(textbuf);
-    OPENSSL_free(encbuf);
-    OPENSSL_free(decbuf);
     return ret;
 }
 
@@ -439,7 +438,6 @@ static int test_multi_op(const test_info *t)
     EVP_CIPHER_CTX *ctx = NULL;
     unsigned char *buf[6] = { NULL };
     unsigned char *ebuf[6] = { NULL };
-    unsigned char *dbuf[6] = { NULL };
     int num_encbytes[6] = { 0 };
 
     ctx = setup_ctx(t, ENC, USE_SW);
@@ -465,8 +463,6 @@ static int test_multi_op(const test_info *t)
     EVP_CIPHER_CTX_free(ctx);
     for (i = 0; i < 6; i++) {
         OPENSSL_free(buf[i]);
-        OPENSSL_free(ebuf[i]);
-        OPENSSL_free(dbuf[i]);
     }
     return ret;
 }
@@ -570,7 +566,7 @@ static int test_small_pkt_offload(const test_info *t)
      * software will create byte identical encrypted buffers.
      */
     ret = encrypt_and_compare(t, &buflen);
-    /* check if SW and Engine implemantation byte identical */
+    /* check if SW and Engine implementation byte identical */
     if (ret != ENCRYPT_BUFF_IDENTICAL) {
         FAIL_MSG("%s Encrypted buffers not identical status:%d run:%d\n",
                  msgstr, ret, ++run);
@@ -653,7 +649,7 @@ static int run_sm4_cbc(void *pointer)
      */
     if (ti.e != NULL) {
         ret = set_pkt_threshold(ti.e, ti.c->name, 0);
-        /* Set engine to NULL as threshhold will fail if NID not supported*/
+        /* Set engine to NULL as threshold will fail if NID not supported*/
         if (ret != 1) {
             return 0;
         }
@@ -733,11 +729,24 @@ static int test_sm4_cbc_encrypt(int num_buffers, ENGINE *e, int *len,
     EVP_CIPHER_CTX *ctx[MULTIBUFF_SM4_BATCH];
     int outl;
     int ret = 1;
+#ifdef QAT_OPENSSL_3
+    OSSL_PARAM params[4] = {OSSL_PARAM_END, OSSL_PARAM_END,
+                               OSSL_PARAM_END, OSSL_PARAM_END};
+    unsigned int pad = 0;
+    params[0] = OSSL_PARAM_construct_uint(OSSL_CIPHER_PARAM_PADDING, &pad);
+    EVP_CIPHER *cipher = EVP_CIPHER_fetch(NULL, "SM4-CBC", "");
+    EVP_CIPHER *sw_cipher = EVP_CIPHER_fetch(NULL, "SM4-CBC", "provider=default");
+#endif
 
     /* Use Engine to do the encryption. */
     for (int i = 0; i < num_buffers; i++) {
         ctx[i] = EVP_CIPHER_CTX_new();
-        EVP_EncryptInit_ex(ctx[i], EVP_sm4_cbc(), e, (int8u*)key[i], iv[i]);
+#ifdef QAT_OPENSSL_3
+        if (e == NULL)
+            EVP_CipherInit_ex2(ctx[i], cipher, (int8u*)key[i], iv[i], 1, params);
+        else
+#endif
+            EVP_EncryptInit_ex(ctx[i], EVP_sm4_cbc(), e, (int8u*)key[i], iv[i]);
     }
 
     for (int i = 0; i < num_buffers; i++) {
@@ -752,10 +761,14 @@ static int test_sm4_cbc_encrypt(int num_buffers, ENGINE *e, int *len,
     /* OpenSSL and crypto_mb are used as reference */
     for (int i = 0; i < num_buffers; i++) {
         ctx[i] = EVP_CIPHER_CTX_new();
+#ifdef QAT_OPENSSL_3
+	params[0] = OSSL_PARAM_construct_uint(OSSL_CIPHER_PARAM_PADDING, &pad);
+        EVP_CipherInit_ex2(ctx[i], sw_cipher, (int8u*)key[i], iv[i], 1, NULL);
+#else
         EVP_EncryptInit(ctx[i], EVP_sm4_cbc(), (int8u*)key[i], iv[i]);
+#endif
         EVP_EncryptUpdate(ctx[i], openssl_out[i], &outl, openssl_in[i], len[i]);
         EVP_EncryptFinal(ctx[i], openssl_out[i] + len[i], &outl);
-
         EVP_CIPHER_CTX_free(ctx[i]);
     }
 
@@ -784,7 +797,10 @@ static int test_sm4_cbc_encrypt(int num_buffers, ENGINE *e, int *len,
 
     if (ret)
         printf("encryption test successful\n");
-    
+#ifdef QAT_OPENSSL_3
+    EVP_CIPHER_free(cipher);
+    EVP_CIPHER_free(sw_cipher);
+#endif
     return ret;
 }
 
@@ -798,11 +814,23 @@ static int test_sm4_cbc_decrypt(int num_buffers, ENGINE *e, int *len,
     EVP_CIPHER_CTX *ctx[MULTIBUFF_SM4_BATCH];
     int outl;
     int ret = 1;
-
+#ifdef QAT_OPENSSL_3
+    OSSL_PARAM params[4] = {OSSL_PARAM_END, OSSL_PARAM_END,
+                               OSSL_PARAM_END, OSSL_PARAM_END};
+    unsigned int pad = 0;
+    params[0] = OSSL_PARAM_construct_uint(OSSL_CIPHER_PARAM_PADDING, &pad);
+    EVP_CIPHER *cipher = EVP_CIPHER_fetch(NULL, "SM4-CBC", "");
+    EVP_CIPHER *sw_cipher = EVP_CIPHER_fetch(NULL, "SM4-CBC", "provider=default");
+#endif
     /* Use Engine to do the decryption. */
     for (int i = 0; i < num_buffers; i++) {
         ctx[i] = EVP_CIPHER_CTX_new();
-        EVP_DecryptInit_ex(ctx[i], EVP_sm4_cbc(), e, (int8u*)key[i], iv[i]);
+#ifdef QAT_OPENSSL_3
+        if (e == NULL)
+            EVP_CipherInit_ex2(ctx[i], cipher, (int8u*)key[i], iv[i], 0, params);
+	else
+#endif
+            EVP_DecryptInit_ex(ctx[i], EVP_sm4_cbc(), e, (int8u*)key[i], iv[i]);
     }
 
     for (int i = 0; i < num_buffers; i++) {
@@ -817,10 +845,13 @@ static int test_sm4_cbc_decrypt(int num_buffers, ENGINE *e, int *len,
     /* OpenSSL and crypto_mb are used as reference */
     for (int i = 0; i < num_buffers; i++) {
         ctx[i] = EVP_CIPHER_CTX_new();
+#ifdef QAT_OPENSSL_3
+        EVP_CipherInit_ex2(ctx[i], sw_cipher, (int8u*)key[i], iv[i], 0, params);
+#else
         EVP_DecryptInit(ctx[i], EVP_sm4_cbc(), (int8u*)key[i], iv[i]);
+#endif
         EVP_DecryptUpdate(ctx[i], openssl_out[i], &outl, openssl_in[i], len[i]);
         EVP_DecryptFinal(ctx[i], openssl_out[i] + len[i], &outl);
-
         EVP_CIPHER_CTX_free(ctx[i]);
     }
 
@@ -849,7 +880,10 @@ static int test_sm4_cbc_decrypt(int num_buffers, ENGINE *e, int *len,
 
     if (ret)
         printf("decryption test successful\n");
-
+#ifdef QAT_OPENSSL_3
+    EVP_CIPHER_free(cipher);
+    EVP_CIPHER_free(sw_cipher);
+#endif
     return ret;
 }
 
@@ -1004,7 +1038,12 @@ static int run_sm4_cbc_msg(void *args)
        that engine under test does not support this operation.
        This relies on the engine we are testing being
        set as the default engine. */
-    ENGINE *e = temp_args->explicit_engine ? temp_args->e : NULL;
+#ifndef QAT_OPENSSL_PROVIDER
+    ENGINE *e = temp_args->e;
+#else
+    ENGINE *e = NULL;
+#endif
+
 
     /* If the inner run fails, abandon test */
     for (cnt = 0; ret && cnt < count; cnt++) {

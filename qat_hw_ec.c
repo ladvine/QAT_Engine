@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -70,17 +70,14 @@
 #endif
 #include "cpa_cy_ec.h"
 #include "cpa_cy_ecdsa.h"
+#ifdef ENABLE_QAT_HW_SM2
+# include "cpa_cy_ecsm2.h"
+#endif
 #include "e_qat.h"
 #include "qat_hw_callback.h"
 #include "qat_hw_polling.h"
 #include "qat_events.h"
 #include "qat_hw_asym_common.h"
-#ifdef USE_QAT_CONTIG_MEM
-# include "qae_mem_utils.h"
-#endif
-#ifdef USE_USDM_MEM
-# include "qat_hw_usdm_inf.h"
-#endif
 #include "qat_utils.h"
 #include "qat_hw_ec.h"
 #include "qat_evp.h"
@@ -154,11 +151,7 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
 
     int inst_num = QAT_INVALID_INSTANCE;
     BIGNUM *xP = NULL, *yP = NULL;
-# if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
-    CpaCyEcGenericPointMultiplyOpData *pOpData = NULL;
-# else
-    CpaCyEcPointMultiplyOpData *opData = NULL;
-# endif
+
     CpaBoolean bEcStatus = 0;
     CpaFlatBuffer *pResultX = NULL;
     CpaFlatBuffer *pResultY = NULL;
@@ -169,6 +162,9 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     op_done_t op_done;
     thread_local_variables_t *tlv = NULL;
     int curve_name;
+    int sm2_flag = 0;
+    ret = sm2_flag;
+    int qat_svm = QAT_INSTANCE_ANY;
 
     DEBUG("QAT HW ECDH Started\n");
 #ifdef ENABLE_QAT_FIPS
@@ -203,38 +199,79 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
         return ret;
     }
 
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+            *fallback = 1;
+            return ret;
+        } else {
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, ERR_R_INTERNAL_ERROR);
+            return ret;
+        }
+    }
+    qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
+
     curve_name = EC_GROUP_get_curve_name(group);
+
 # if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
-    pOpData = (CpaCyEcGenericPointMultiplyOpData *)
-               OPENSSL_zalloc(sizeof(CpaCyEcGenericPointMultiplyOpData));
-    if (pOpData == NULL) {
-        WARN("Failure to allocate pOpData\n");
-        QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_MALLOC_FAILURE);
-        return ret;
+#  ifdef ENABLE_QAT_HW_SM2
+    CpaCyEcsm2PointMultiplyOpData *psm2OpData = NULL;
+#  endif
+    CpaCyEcGenericPointMultiplyOpData *pOpData = NULL;
+# else
+    CpaCyEcPointMultiplyOpData *opData = NULL;
+# endif
+
+# if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
+#  ifdef ENABLE_QAT_HW_SM2
+    if (curve_name  == NID_sm2 || curve_name == NID_sm3) {
+        psm2OpData = (CpaCyEcsm2PointMultiplyOpData *)
+                   OPENSSL_zalloc(sizeof(CpaCyEcsm2PointMultiplyOpData));
+        if (psm2OpData == NULL) {
+            WARN("Failure to allocate psm2OpData\n");
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_MALLOC_FAILURE);
+            return ret;
+        }
+        sm2_flag = 1;
+        psm2OpData->k.pData = NULL;
+        psm2OpData->x.pData = NULL;
+        psm2OpData->y.pData = NULL;
     }
+#  endif
+    if (!sm2_flag) {
+        pOpData = (CpaCyEcGenericPointMultiplyOpData *)
+                   OPENSSL_zalloc(sizeof(CpaCyEcGenericPointMultiplyOpData));
+        if (pOpData == NULL) {
+            WARN("Failure to allocate pOpData\n");
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_MALLOC_FAILURE);
+            return ret;
+        }
 
-    pOpData->pCurve = (CpaCyEcCurve *) qaeCryptoMemAlloc(sizeof(CpaCyEcCurve),
-                                         __FILE__, __LINE__);
-    if (pOpData->pCurve == NULL) {
-        WARN("Failure to allocate pOpData->pCurve\n");
-        QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_PCURVE_MALLOC_FAILURE);
-        OPENSSL_free(pOpData);
-        return ret;
+        pOpData->pCurve = (CpaCyEcCurve *) qat_mem_alloc(sizeof(CpaCyEcCurve),
+                            qat_svm,  __FILE__, __LINE__);
+        if (pOpData->pCurve == NULL) {
+            WARN("Failure to allocate pOpData->pCurve\n");
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_PCURVE_MALLOC_FAILURE);
+            OPENSSL_free(pOpData);
+            return ret;
+        }
+
+        if (outY != NULL)
+            pOpData->generator = CPA_TRUE;
+        else
+            pOpData->generator = CPA_FALSE;
+
+        pOpData->k.pData = NULL;
+        pOpData->xP.pData = NULL;
+        pOpData->yP.pData = NULL;
+        pOpData->pCurve->parameters.weierstrassParameters.a.pData = NULL;
+        pOpData->pCurve->parameters.weierstrassParameters.b.pData = NULL;
+        pOpData->pCurve->parameters.weierstrassParameters.p.pData = NULL;
+        pOpData->pCurve->parameters.weierstrassParameters.h.pData = NULL;
+        pOpData->pCurve->parameters.weierstrassParameters.h.dataLenInBytes = 0;
     }
-
-    if (outY != NULL)
-        pOpData->generator = CPA_TRUE;
-    else
-        pOpData->generator = CPA_FALSE;
-
-    pOpData->k.pData = NULL;
-    pOpData->xP.pData = NULL;
-    pOpData->yP.pData = NULL;
-    pOpData->pCurve->parameters.weierstrassParameters.a.pData = NULL;
-    pOpData->pCurve->parameters.weierstrassParameters.b.pData = NULL;
-    pOpData->pCurve->parameters.weierstrassParameters.p.pData = NULL;
-    pOpData->pCurve->parameters.weierstrassParameters.h.pData = NULL;
-    pOpData->pCurve->parameters.weierstrassParameters.h.dataLenInBytes = 0;
 # else
     opData = (CpaCyEcPointMultiplyOpData *)
               OPENSSL_zalloc(sizeof(CpaCyEcPointMultiplyOpData));
@@ -276,26 +313,40 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     }
 
     buflen = (EC_GROUP_get_degree(group) + 7) / 8;
-    pResultX = (CpaFlatBuffer *) OPENSSL_malloc(sizeof(CpaFlatBuffer));
+    pResultX = (CpaFlatBuffer *) OPENSSL_zalloc(sizeof(CpaFlatBuffer));
     if (pResultX == NULL) {
         WARN("Failure to allocate pResultX\n");
         QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRESULTX_MALLOC_FAILURE);
         goto err;
     }
-    pResultX->pData = qaeCryptoMemAlloc(buflen, __FILE__, __LINE__);
+
+    if (qat_svm && outX != NULL) {
+        *outlenX = (Cpa32U) buflen;
+        *outX = OPENSSL_zalloc(*outlenX);
+        pResultX->pData = (Cpa8U*) *outX;
+    } else {
+        pResultX->pData = qat_mem_alloc(buflen, qat_svm, __FILE__, __LINE__);
+    }
+
     if (pResultX->pData == NULL) {
         WARN("Failure to allocate pResultX->pData\n");
         QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRESULTX_PDATA_MALLOC_FAILURE);
         goto err;
     }
     pResultX->dataLenInBytes = (Cpa32U) buflen;
-    pResultY = (CpaFlatBuffer *) OPENSSL_malloc(sizeof(CpaFlatBuffer));
+
+    pResultY = (CpaFlatBuffer *) OPENSSL_zalloc(sizeof(CpaFlatBuffer));
     if (!pResultY) {
         WARN("Failure to allocate pResultY\n");
         QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRESULTY_MALLOC_FAILURE);
         goto err;
     }
-    pResultY->pData = qaeCryptoMemAlloc(buflen, __FILE__, __LINE__);
+    if (qat_svm && outY != NULL) {
+        *outY = OPENSSL_zalloc(*outlenY);
+        pResultY->pData = (Cpa8U*) *outY;
+    } else {
+        pResultY->pData = qat_mem_alloc(buflen, qat_svm, __FILE__, __LINE__);
+    }
     if (pResultY->pData == NULL) {
         WARN("Failure to allocate pResultY->pData\n");
         QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRESULTY_PDATA_MALLOC_FAILURE);
@@ -322,66 +373,72 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     }
 
 # if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
-    pOpData->pCurve->parameters.weierstrassParameters.fieldType = qat_get_field_type(group);
-    pOpData->pCurve->curveType = qat_get_curve(pOpData->pCurve->parameters.weierstrassParameters.fieldType);
-
-    if ((qat_BN_to_FB(&(pOpData->k), (BIGNUM *)priv_key) != 1) ||
-        (qat_BN_to_FB(&(pOpData->xP), xP) != 1) ||
-        (qat_BN_to_FB(&(pOpData->yP), yP) != 1) ||
-        (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.a), a) != 1) ||
-        (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.b), b) != 1) ||
-        (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.p), p) != 1)) {
-        WARN("Failure to convert priv_key, xP, yP, a, b or p to flatbuffer\n");
-        QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRIV_KEY_XP_YP_A_B_P_CONVERT_TO_FB_FAILURE);
-        goto err;
-     }
-
-#ifndef QAT_OPENSSL_PROVIDER
-     /* Pass Co-factor to Opdata */
-     if (pOpData->pCurve->parameters.weierstrassParameters.fieldType
-         == CPA_CY_EC_FIELD_TYPE_PRIME) {
-         if (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.h), h) != 1) {
-             WARN("Failure to convert h to flatbuffer\n");
-             QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_H_CONVERT_TO_FB_FAILURE);
-             goto err;
-         }
-     }
-#else
-     if (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.h), h) != 1) {
-	 WARN("Failure to convert h to flatbuffer\n");
-	 QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_H_CONVERT_TO_FB_FAILURE);
-	 goto err;
-     }
-#endif
-
-    /*
-     * This is a special handling required for curves with 'a' co-efficient
-     * of 0. The translation to a flatbuffer results in a zero sized field
-     * but the Quickassist API expects a flatbuffer of size 1 with a value
-     * of zero. As a special case we will create that manually.
-     */
-
-    if (pOpData->pCurve->parameters.weierstrassParameters.a.pData == NULL &&
-        pOpData->pCurve->parameters.weierstrassParameters.a.dataLenInBytes == 0) {
-        pOpData->pCurve->parameters.weierstrassParameters.a.pData =
-                qaeCryptoMemAlloc(1, __FILE__, __LINE__);
-        if (pOpData->pCurve->parameters.weierstrassParameters.a.pData == NULL) {
-            WARN("Failure to allocate pOpData->pCurve->parameters.weierstrassParameters.a.pData\n");
-            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_A_PDATA_MALLOC_FAILURE);
+#  ifdef ENABLE_QAT_HW_SM2
+    if (curve_name  == NID_sm2 || curve_name == NID_sm3) {
+        psm2OpData->fieldType = qat_get_field_type(group);
+        if ((qat_BN_to_FB(&(psm2OpData->k), (BIGNUM *)priv_key, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(psm2OpData->x), xP, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(psm2OpData->y), yP, qat_svm) != 1)) {
+            WARN("Failure to convert priv_key, x, y to flatbuffer\n");
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRIV_KEY_XG_YG_A_B_P_CONVERT_TO_FB_FAILURE);
             goto err;
         }
-        pOpData->pCurve->parameters.weierstrassParameters.a.dataLenInBytes = 1;
-        pOpData->pCurve->parameters.weierstrassParameters.a.pData[0] = 0;
+    }
+#  endif
+    if (!sm2_flag) {
+        pOpData->pCurve->parameters.weierstrassParameters.fieldType = qat_get_field_type(group);
+        pOpData->pCurve->curveType = qat_get_curve(pOpData->pCurve->parameters.weierstrassParameters.fieldType);
+
+        if ((qat_BN_to_FB(&(pOpData->k), (BIGNUM *)priv_key, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(pOpData->xP), xP, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(pOpData->yP), yP, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.a), a, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.b), b, qat_svm) != 1) ||
+            (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.p), p, qat_svm) != 1)) {
+            WARN("Failure to convert priv_key, xP, yP, a, b or p to flatbuffer\n");
+            QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRIV_KEY_XP_YP_A_B_P_CONVERT_TO_FB_FAILURE);
+            goto err;
+        }
+
+        /* Pass Co-factor to Opdata */
+        if (pOpData->pCurve->parameters.weierstrassParameters.fieldType
+             == CPA_CY_EC_FIELD_TYPE_PRIME) {
+             if (qat_BN_to_FB(&(pOpData->pCurve->parameters.weierstrassParameters.h), h, qat_svm) != 1) {
+                 WARN("Failure to convert h to flatbuffer\n");
+                 QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_H_CONVERT_TO_FB_FAILURE);
+                 goto err;
+             }
+        }
+
+        /*
+         * This is a special handling required for curves with 'a' co-efficient
+         * of 0. The translation to a flatbuffer results in a zero sized field
+         * but the Quickassist API expects a flatbuffer of size 1 with a value
+         * of zero. As a special case we will create that manually.
+         */
+
+        if (pOpData->pCurve->parameters.weierstrassParameters.a.pData == NULL &&
+            pOpData->pCurve->parameters.weierstrassParameters.a.dataLenInBytes == 0) {
+            pOpData->pCurve->parameters.weierstrassParameters.a.pData =
+                    qat_mem_alloc(1, qat_svm, __FILE__, __LINE__);
+            if (pOpData->pCurve->parameters.weierstrassParameters.a.pData == NULL) {
+                WARN("Failure to allocate pOpData->pCurve->parameters.weierstrassParameters.a.pData\n");
+                QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_POPDATA_A_PDATA_MALLOC_FAILURE);
+                goto err;
+            }
+            pOpData->pCurve->parameters.weierstrassParameters.a.dataLenInBytes = 1;
+            pOpData->pCurve->parameters.weierstrassParameters.a.pData[0] = 0;
+        }
     }
 # else
     opData->fieldType = qat_get_field_type(group);
 
-    if ((qat_BN_to_FB(&(opData->k), (BIGNUM *)priv_key) != 1) ||
-        (qat_BN_to_FB(&(opData->xg), xP) != 1) ||
-        (qat_BN_to_FB(&(opData->yg), yP) != 1) ||
-        (qat_BN_to_FB(&(opData->a), a) != 1) ||
-        (qat_BN_to_FB(&(opData->b), b) != 1) ||
-        (qat_BN_to_FB(&(opData->q), p) != 1)) {
+    if ((qat_BN_to_FB(&(opData->k), (BIGNUM *)priv_key, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->xg), xP, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->yg), yP, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->a), a, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->b), b, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->q), p, qat_svm) != 1)) {
         WARN("Failure to convert priv_key, xg, yg, a, b or p to flatbuffer\n");
         QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRIV_KEY_XG_YG_A_B_P_CONVERT_TO_FB_FAILURE);
         goto err;
@@ -389,7 +446,7 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
 
     /* Pass Co-factor to Opdata */
     if (opData->fieldType == CPA_CY_EC_FIELD_TYPE_PRIME) {
-        if (qat_BN_to_FB(&(opData->h), h) != 1) {
+        if (qat_BN_to_FB(&(opData->h), h, qat_svm) != 1) {
             WARN("Failure to convert h to flatbuffer\n");
             QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_H_CONVERT_TO_FB_FAILURE);
             goto err;
@@ -404,7 +461,7 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
      */
 
     if (opData->a.pData == NULL && opData->a.dataLenInBytes == 0) {
-        opData->a.pData = qaeCryptoMemAlloc(1, __FILE__, __LINE__);
+        opData->a.pData = qat_mem_alloc(1, qat_svm,__FILE__, __LINE__);
         if (opData->a.pData == NULL) {
             WARN("Failure to allocate opData->a.pData\n");
             QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_OPDATA_A_PDATA_MALLOC_FAILURE);
@@ -422,7 +479,11 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
             goto err;
     }
 
+#ifdef QAT_BORINGSSL
+    qat_init_op_done(&op_done, qat_svm);
+#else
     qat_init_op_done(&op_done);
+#endif
     if (op_done.job != NULL) {
         if (qat_setup_async_event_notification(op_done.job) == 0) {
             WARN("Failed to setup async event notification\n");
@@ -437,8 +498,8 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     /* Invoke the crypto engine API for EC Point Multiply */
     do {
         START_RDTSC(&qat_hw_ecdh_derive_req_submit);
-        if ((inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_ASYM))
-             == QAT_INVALID_INSTANCE) {
+        if (status == CPA_STATUS_RETRY &&
+           (inst_num = get_instance(QAT_INSTANCE_ASYM, qat_svm)) == QAT_INVALID_INSTANCE) {
             WARN("Failed to get an instance\n");
             if (qat_get_sw_fallback_enabled()) {
                 CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
@@ -446,21 +507,32 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
             } else {
                 QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, ERR_R_INTERNAL_ERROR);
             }
-            if (op_done.job != NULL) {
+            if (op_done.job != NULL)
                 qat_clear_async_event_notification(op_done.job);
-            }
             qat_cleanup_op_done(&op_done);
             goto err;
         }
 
         CRYPTO_QAT_LOG("KX - %s\n", __func__);
 # if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
+#  ifdef ENABLE_QAT_HW_SM2
+    if (curve_name  == NID_sm2 || curve_name == NID_sm3) {
+        DUMP_EC_SM2_POINT_MULTIPLY(qat_instance_handles[inst_num], psm2OpData, pResultX, pResultY);
+        status = cpaCyEcsm2PointMultiply(qat_instance_handles[inst_num],
+                                             qat_ecCallbackFn,
+                                             &op_done,
+                                             psm2OpData,
+                                             &bEcStatus, pResultX, pResultY);
+    }
+#  endif
+    if (!sm2_flag) {
         DUMP_EC_GENERIC_POINT_MULTIPLY(qat_instance_handles[inst_num], pOpData, pResultX, pResultY);
         status = cpaCyEcGenericPointMultiply(qat_instance_handles[inst_num],
                                              qat_ecCallbackFn,
                                              &op_done,
                                              pOpData,
                                              &bEcStatus, pResultX, pResultY);
+    }
 # else
         DUMP_EC_POINT_MULTIPLY(qat_instance_handles[inst_num], opData, pResultX, pResultY);
         status = cpaCyEcPointMultiply(qat_instance_handles[inst_num],
@@ -479,10 +551,10 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
                     DEBUG("cpaCyEcPointMultiply Retry \n");
                     if (outY) { /* key generation */
                         ++num_ecdh_keygen_retry;
-                        qat_sw_ecdh_keygen_req += QAT_RETRY_COUNT;
+                        qat_sw_ecdh_keygen_req += QAT_SW_SWITCH_MB8;
                     } else { /* compute key */
                         ++num_ecdh_derive_retry;
-                        qat_sw_ecdh_derive_req += QAT_RETRY_COUNT;
+                        qat_sw_ecdh_derive_req += QAT_SW_SWITCH_MB8;
                     }
                     *fallback = 1;
                     qat_cleanup_op_done(&op_done);
@@ -560,12 +632,10 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     }
 
     if (qat_ecdh_coexist) {
-        if (outY) {
+        if (outY)
             ++num_ecdh_hw_keygen_reqs;
-        }
-        else {
+        else
             ++num_ecdh_hw_derive_reqs;
-        }
     }
 
     do {
@@ -608,7 +678,7 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     qat_cleanup_op_done(&op_done);
 
     /* KDF, is done in the caller now just copy out bytes */
-    if (outX != NULL) {
+    if (outX != NULL && !qat_svm) {
         *outlenX = pResultX->dataLenInBytes;
         *outX = OPENSSL_zalloc(*outlenX);
         if (*outX == NULL) {
@@ -624,7 +694,7 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
         memcpy(*outX, pResultX->pData, *outlenX);
     }
 
-    if (outY != NULL) {
+    if (outY != NULL && !qat_svm) {
         if (*outlenY != pResultY->dataLenInBytes) {
             WARN("Failed length check of pResultY->dataLenInBytes\n");
             QATerr(QAT_F_QAT_ECDH_COMPUTE_KEY, QAT_R_PRESULTY_LENGTH_CHECK_FAILURE);
@@ -648,35 +718,49 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
  err:
     START_RDTSC(&qat_hw_ecdh_derive_req_cleanup);
     if (pResultX) {
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(*pResultX);
+        if (!qat_svm)
+           qaeCryptoMemFree(pResultX->pData);
         OPENSSL_free(pResultX);
     }
     if (pResultY) {
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(*pResultY);
+        if (!qat_svm)
+           qaeCryptoMemFree(pResultY->pData);
         OPENSSL_free(pResultY);
     }
 
 # if defined(QAT20_OOT) || defined(QAT_HW_INTREE)
-    if (pOpData) {
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(pOpData->k);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->xP);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->yP);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.a);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.b);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.p);
-        QAT_CHK_QMFREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.h);
-        QAT_QMEMFREE_BUFF(pOpData->pCurve);
-        OPENSSL_free(pOpData);
+#  ifdef ENABLE_QAT_HW_SM2
+    if (curve_name  == NID_sm2 || curve_name == NID_sm3) {
+        if (psm2OpData) {
+            QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(psm2OpData->k, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(psm2OpData->x, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(psm2OpData->y, qat_svm);
+            OPENSSL_free(psm2OpData);
+        }
+     }
+#  endif
+    if (!sm2_flag) {
+        if (pOpData) {
+            QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(pOpData->k, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->xP, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->yP, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.a, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.b, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.p, qat_svm);
+            QAT_MEM_FREE_FLATBUFF(pOpData->pCurve->parameters.weierstrassParameters.h, qat_svm);
+            QAT_MEM_FREE_BUFF(pOpData->pCurve, qat_svm);
+            OPENSSL_free(pOpData);
+        }
     }
 # else
     if (opData) {
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(opData->k);
-        QAT_CHK_QMFREE_FLATBUFF(opData->xg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->yg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->a);
-        QAT_CHK_QMFREE_FLATBUFF(opData->b);
-        QAT_CHK_QMFREE_FLATBUFF(opData->q);
-        QAT_CHK_QMFREE_FLATBUFF(opData->h);
+        QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(opData->k, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->xg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->yg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->a, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->b, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->q, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->h, qat_svm);
         OPENSSL_free(opData);
     }
 # endif
@@ -690,7 +774,6 @@ int qat_ecdh_compute_key(unsigned char **outX, size_t *outlenX,
     return ret;
 }
 
-
 int qat_engine_ecdh_compute_key(unsigned char **out,
                                 size_t *outlen,
                                 const EC_POINT *pub_key,
@@ -699,7 +782,6 @@ int qat_engine_ecdh_compute_key(unsigned char **out,
     int fallback = 0, ret = 0;
     PFUNC_COMP_KEY comp_key_pfunc = NULL;
     const EC_GROUP *group = NULL;
-    const BIGNUM *priv_key = NULL;
 #ifndef QAT_INSECURE_ALGO
     int bitlen = 0;
 #endif
@@ -713,7 +795,7 @@ int qat_engine_ecdh_compute_key(unsigned char **out,
         return ret;
     }
 
-    if (ecdh == NULL || (priv_key = EC_KEY_get0_private_key(ecdh)) == NULL) {
+    if (ecdh == NULL || (EC_KEY_get0_private_key(ecdh) == NULL)) {
         WARN("Either ecdh or priv_key is NULL\n");
         QATerr(QAT_F_QAT_ENGINE_ECDH_COMPUTE_KEY, QAT_R_ECDH_PRIVATE_KEY_NULL);
         return ret;
@@ -994,6 +1076,8 @@ static void qat_ecdsaSignCallbackFn(void *pCallbackTag, CpaStatus status,
     size_t bytes_len = 0;
     pBuffer.pBuffers = NULL;
     op_done_t *opDone = NULL;
+    int inst_num = QAT_INVALID_INSTANCE;
+    int qat_svm = QAT_INSTANCE_ANY;
 
     if (!bEcdsaSignStatus) {
         WARN("ECDSA sign failed, status %d verifyResult %d\n", status, bEcdsaSignStatus);
@@ -1017,6 +1101,17 @@ static void qat_ecdsaSignCallbackFn(void *pCallbackTag, CpaStatus status,
         WARN("Async job context or data buffer is empty\n");
         goto err;
     }
+
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+        }
+        goto err;
+    }
+
+    qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
 
     ret_sig = (CpaFlatBuffer *)(opDone->job->waitctx->data);
     pBuffer.pBuffers = ret_sig;
@@ -1043,11 +1138,11 @@ err:
     if (s)
         ECDSA_SIG_free(s);
     if (pResultR) {
-        QAT_CHK_QMFREE_FLATBUFF(*pResultR);
+        QAT_MEM_FREE_FLATBUFF(*pResultR, qat_svm);
         OPENSSL_free(pResultR);
     }
     if (pResultS) {
-        QAT_CHK_QMFREE_FLATBUFF(*pResultS);
+        QAT_MEM_FREE_FLATBUFF(*pResultS, qat_svm);
         OPENSSL_free(pResultS);
     }
 
@@ -1058,6 +1153,18 @@ err:
 static void ec_decrypt_op_buf_free(CpaCyEcdsaSignRSOpData * opData,
                         CpaFlatBuffer* out_buf)
 {
+    int inst_num = QAT_INVALID_INSTANCE;
+    int qat_svm = QAT_INSTANCE_ANY;
+
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+        }
+    } else
+        qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
+
     if (out_buf) {
         if (out_buf->pData) {
             qaeCryptoMemFreeNonZero(out_buf->pData);
@@ -1066,15 +1173,15 @@ static void ec_decrypt_op_buf_free(CpaCyEcdsaSignRSOpData * opData,
     }
 
     if (opData) {
-        QAT_CHK_QMFREE_FLATBUFF(opData->n);
-        QAT_CHK_QMFREE_FLATBUFF(opData->m);
-        QAT_CHK_QMFREE_FLATBUFF(opData->xg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->yg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->a);
-        QAT_CHK_QMFREE_FLATBUFF(opData->b);
-        QAT_CHK_QMFREE_FLATBUFF(opData->q);
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(opData->k);
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(opData->d);
+        QAT_MEM_FREE_FLATBUFF(opData->n, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->m, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->xg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->yg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->a, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->b, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->q, qat_svm);
+        QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(opData->k, qat_svm);
+        QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(opData->d, qat_svm);
         OPENSSL_free(opData);
     }
 }
@@ -1194,8 +1301,23 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
     const EC_POINT *ec_point = NULL;
     thread_local_variables_t *tlv = NULL;
     int curve_name;
+    int qat_svm = QAT_INSTANCE_ANY;
 #ifndef QAT_INSECURE_ALGO
     int bitlen = 0;
+#endif
+
+#ifdef ENABLE_QAT_HW_KPT
+    if (eckey && qat_check_ec_wpk(eckey)) {
+        if (is_kpt_mode()) {
+            DEBUG("Run the qat_ecdsa_do_sign in KPT mode.\n");
+            return
+                qat_hw_kpt_ecdsa_do_sign(dgst, dgst_len, in_kinv, in_r, eckey);
+        }
+        else {
+            WARN("Use the WPK in Non-KPT mode, return failed.\n");
+            return NULL;
+        }
+    }
 #endif
 
     DEBUG("QAT HW ECDSA Started\n");
@@ -1249,6 +1371,18 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
         return (*sign_sig_pfunc)(dgst, dgst_len, in_kinv, in_r, eckey);
     }
 #endif
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+            return (*sign_sig_pfunc)(dgst, dgst_len, in_kinv, in_r, eckey);
+        } else {
+            QATerr(QAT_F_QAT_ECDSA_DO_SIGN, ERR_R_INTERNAL_ERROR);
+            return ret;
+        }
+    }
+    qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
 
     curve_name = EC_GROUP_get_curve_name(group);
     if ((ec_point = EC_GROUP_get0_generator(group)) == NULL) {
@@ -1346,13 +1480,13 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
         goto err;
     }
 
-    if (qat_BN_to_FB(&(opData->d), (BIGNUM *)priv_key) != 1 ||
-        qat_BN_to_FB(&(opData->m), m) != 1 ||
-        qat_BN_to_FB(&(opData->xg), xg) != 1 ||
-        qat_BN_to_FB(&(opData->yg), yg) != 1 ||
-        qat_BN_to_FB(&(opData->a), a) != 1 ||
-        qat_BN_to_FB(&(opData->b), b) != 1 ||
-        qat_BN_to_FB(&(opData->q), p) != 1) {
+    if (qat_BN_to_FB(&(opData->d), (BIGNUM *)priv_key, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->m), m, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->xg), xg, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->yg), yg, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->a), a, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->b), b, qat_svm) != 1 ||
+        qat_BN_to_FB(&(opData->q), p, qat_svm) != 1) {
         WARN("Failed to convert d, m, xg, yg, a, b or p to a flatbuffer\n");
         QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_PRIV_KEY_M_XG_YG_A_B_P_CONVERT_TO_FB_FAILURE);
         goto err;
@@ -1365,7 +1499,7 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
      * of zero. As a special case we will create that manually.
      */
     if (opData->a.pData == NULL && opData->a.dataLenInBytes == 0) {
-        opData->a.pData = qaeCryptoMemAlloc(1, __FILE__, __LINE__);
+        opData->a.pData = qat_mem_alloc(1, qat_svm, __FILE__, __LINE__);
         if (opData->a.pData == NULL) {
             WARN("Failure to allocate opData->a.pData\n");
             QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_OPDATA_PDATA_MALLOC_FAILURE);
@@ -1402,54 +1536,57 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
         while (BN_is_zero(k));
 #endif
 
-        if ((qat_BN_to_FB(&(opData->k), k)) != 1) {
+        if ((qat_BN_to_FB(&(opData->k), k, qat_svm)) != 1) {
             WARN("Failed to convert k to a flatbuffer\n");
             QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_K_CONVERT_TO_FB_FAILURE);
             goto err;
         }
 
-        if ((qat_BN_to_FB(&(opData->n), order)) != 1) {
+        if ((qat_BN_to_FB(&(opData->n), order, qat_svm)) != 1) {
             WARN("Failed to convert order to a flatbuffer\n");
             QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_K_ORDER_CONVERT_TO_FB_FAILURE);
             goto err;
         }
 
     } else {
-        if ((qat_BN_to_FB(&(opData->k), (BIGNUM *)in_kinv)) != 1) {
+        if ((qat_BN_to_FB(&(opData->k), (BIGNUM *)in_kinv, qat_svm)) != 1) {
             WARN("Failed to convert in_kinv to a flatbuffer\n");
             QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_IN_KINV_CONVERT_TO_FB_FAILURE);
             goto err;
         }
 
-        if ((qat_BN_to_FB(&(opData->n), (BIGNUM *)in_r)) != 1) {
+        if ((qat_BN_to_FB(&(opData->n), (BIGNUM *)in_r, qat_svm)) != 1) {
             WARN("Failed to convert in_r to a flatbuffer\n");
             QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_IN_R_CONVERT_TO_FB_FAILURE);
             goto err;
         }
 
     }
-
     buflen = EC_GROUP_get_degree(group);
-    pResultR = (CpaFlatBuffer *) OPENSSL_malloc(sizeof(CpaFlatBuffer));
+
+    pResultR = (CpaFlatBuffer *) OPENSSL_zalloc(sizeof(CpaFlatBuffer));
     if (pResultR == NULL) {
         WARN("Failure to allocate pResultR\n");
         QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_PRESULTR_MALLOC_FAILURE);
         goto err;
     }
-    pResultR->pData = qaeCryptoMemAlloc(buflen, __FILE__, __LINE__);
+
+    pResultR->pData = qat_mem_alloc(buflen, qat_svm,__FILE__, __LINE__);
     if (pResultR->pData == NULL) {
         WARN("Failure to allocate pResultR->pData\n");
         QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_PRESULTR_PDATA_MALLOC_FAILURE);
         goto err;
     }
     pResultR->dataLenInBytes = (Cpa32U) buflen;
-    pResultS = (CpaFlatBuffer *) OPENSSL_malloc(sizeof(CpaFlatBuffer));
+
+    pResultS = (CpaFlatBuffer *) OPENSSL_zalloc(sizeof(CpaFlatBuffer));
     if (pResultS == NULL) {
         WARN("Failure to allocate pResultS\n");
         QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_PRESULTS_MALLOC_FAILURE);
         goto err;
     }
-    pResultS->pData = qaeCryptoMemAlloc(buflen, __FILE__, __LINE__);
+
+    pResultS->pData = qat_mem_alloc(buflen, qat_svm,__FILE__, __LINE__);
     if (pResultS->pData == NULL) {
         WARN("Failure to allocate pResultS->pData\n");
         QATerr(QAT_F_QAT_ECDSA_DO_SIGN, QAT_R_PRESULTS_PDATA_MALLOC_FAILURE);
@@ -1466,7 +1603,11 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
             goto err;
     }
 
+#ifdef QAT_BORINGSSL
+    qat_init_op_done(&op_done, qat_svm);
+#else
     qat_init_op_done(&op_done);
+#endif
     if (op_done.job != NULL) {
         if (qat_setup_async_event_notification(op_done.job) == 0) {
             WARN("Failure to setup async event notifications\n");
@@ -1483,7 +1624,7 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
             WARN("Failure to allocate ret_sig\n");
             goto err;
         }
-        ret_sig->pData = qaeCryptoMemAlloc(ECDSA_size(eckey), __FILE__, __LINE__);
+        ret_sig->pData = qat_mem_alloc(ECDSA_size(eckey), qat_svm, __FILE__, __LINE__);
         if (ret_sig->pData == NULL) {
             WARN("Failure to allocate ret_sig->pData\n");
             goto err;
@@ -1493,18 +1634,17 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
         op_done.job->waitctx->data = ret_sig;
         op_done_bssl = (op_done_t *)op_done.job->copy_op_done(&op_done,
                         sizeof(op_done),
-                        (void (*)(void *, void *))ec_decrypt_op_buf_free);
+                        (void (*)(void *, void *, int))ec_decrypt_op_buf_free);
     }
 #endif /* QAT_BORINGSSL */
 
     STOP_RDTSC(&qat_hw_ecdsa_sign_req_prepare, 1, "[QAT HW ECDSA: prepare]");
 
-    CRYPTO_QAT_LOG("AU - %s\n", __func__);
-
     do {
         START_RDTSC(&qat_hw_ecdsa_sign_req_submit);
-        if ((inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_ASYM))
-             == QAT_INVALID_INSTANCE) {
+        if (status == CPA_STATUS_RETRY &&
+           (inst_num = get_instance(QAT_INSTANCE_ASYM, qat_svm))
+            == QAT_INVALID_INSTANCE) {
             WARN("Failure to get another instance\n");
             if (qat_get_sw_fallback_enabled()) {
                 CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
@@ -1522,7 +1662,6 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
             goto err;
         }
 
-        CRYPTO_QAT_LOG("AU - %s\n", __func__);
         DUMP_ECDSA_SIGN(qat_instance_handles[inst_num], opData, pResultR, pResultS);
 #ifndef QAT_BORINGSSL
         status = cpaCyEcdsaSignRS(qat_instance_handles[inst_num],
@@ -1537,8 +1676,7 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
                                 op_done_bssl,
                                 opData,
                                 &bEcdsaSignStatus, pResultR, pResultS);
-        }
-        else {
+        } else {
             DEBUG("Running sync mode for ECDSA request\n");
             status = cpaCyEcdsaSignRS(qat_instance_handles[inst_num],
                                     qat_ecdsaSignCallbackFn,
@@ -1553,8 +1691,7 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
             if (qat_ecdsa_coexist && (curve_name == NID_secp384r1)) {
                 START_RDTSC(&qat_hw_ecdsa_sign_req_retry);
                 ++num_ecdsa_sign_retry;
-                qat_sw_ecdsa_sign_req += QAT_RETRY_COUNT;
-
+                qat_sw_ecdsa_sign_req += QAT_SW_SWITCH_MB8;
                 fallback = 1;
                 qat_cleanup_op_done(&op_done);
                 STOP_RDTSC(&qat_hw_ecdsa_sign_req_retry, 1, "[QAT HW ECDSA: retry]");
@@ -1572,13 +1709,13 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
                         }
                     }
                 } else {
-    #ifndef QAT_BORINGSSL
+#ifndef QAT_BORINGSSL
                     if ((qat_wake_job(op_done.job, ASYNC_STATUS_EAGAIN) == 0) ||
                         (qat_pause_job(op_done.job, ASYNC_STATUS_EAGAIN) == 0)) {
                         WARN("qat_wake_job or qat_pause_job failed\n");
                         break;
                     }
-    #endif
+#endif
                 }
             }
         }
@@ -1647,9 +1784,8 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
         QAT_ATOMIC_INC(num_asym_requests_in_flight);
     }
 
-    if (qat_ecdsa_coexist) {
+    if (qat_ecdsa_coexist)
         ++num_ecdsa_hw_sign_reqs;
-    }
 
     do {
         if(op_done.job != NULL) {
@@ -1715,39 +1851,36 @@ ECDSA_SIG *qat_ecdsa_do_sign(const unsigned char *dgst, int dgst_len,
 
 #ifdef QAT_BORINGSSL
     if (ret_sig) {
-        QAT_CHK_QMFREE_FLATBUFF(*ret_sig);
+        QAT_MEM_FREE_FLATBUFF(*ret_sig, qat_svm);
         OPENSSL_free(ret_sig);
     }
 #endif /* QAT_BORINGSSL */
 
     if (pResultR) {
-        QAT_CHK_QMFREE_FLATBUFF(*pResultR);
+        QAT_MEM_FREE_FLATBUFF(*pResultR, qat_svm);
         OPENSSL_free(pResultR);
     }
     if (pResultS) {
-        QAT_CHK_QMFREE_FLATBUFF(*pResultS);
+        QAT_MEM_FREE_FLATBUFF(*pResultS, qat_svm);
         OPENSSL_free(pResultS);
     }
-
     if (opData) {
-        QAT_CHK_QMFREE_FLATBUFF(opData->n);
-        QAT_CHK_QMFREE_FLATBUFF(opData->m);
-        QAT_CHK_QMFREE_FLATBUFF(opData->xg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->yg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->a);
-        QAT_CHK_QMFREE_FLATBUFF(opData->b);
-        QAT_CHK_QMFREE_FLATBUFF(opData->q);
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(opData->k);
-        QAT_CHK_CLNSE_QMFREE_NONZERO_FLATBUFF(opData->d);
+        QAT_MEM_FREE_FLATBUFF(opData->n, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->m, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->xg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->yg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->a, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->b, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->q, qat_svm);
+        QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(opData->k, qat_svm);
+        QAT_CLEANSE_MEMFREE_NONZERO_FLATBUFF(opData->d, qat_svm);
         OPENSSL_free(opData);
     }
-
     if (ctx) {
         BN_CTX_end(ctx);
         BN_CTX_free(ctx);
     }
     STOP_RDTSC(&qat_hw_ecdsa_sign_req_cleanup, 1, "[QAT HW ECDSA: cleanup]");
-
     if (fallback) {
         CRYPTO_QAT_LOG("Resubmitting request to SW - %s\n", __func__);
         if (qat_ecdsa_coexist) {
@@ -1827,6 +1960,7 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
     useconds_t ulPollInterval = getQatPollInterval();
     int iMsgRetry = getQatMsgRetryCount();
     thread_local_variables_t *tlv = NULL;
+    int qat_svm = QAT_INSTANCE_ANY;
 #ifndef QAT_INSECURE_ALGO
     int bitlen = 0;
 #endif
@@ -1870,6 +2004,19 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
         return (*verify_sig_pfunc)(dgst, dgst_len, sig, eckey);
     }
 #endif
+
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+            return (*verify_sig_pfunc)(dgst, dgst_len, sig, eckey);
+        } else {
+            QATerr(QAT_F_QAT_ECDSA_DO_VERIFY, ERR_R_INTERNAL_ERROR);
+            return ret;
+        }
+    }
+    qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
 
     if ((ec_point = EC_GROUP_get0_generator(group)) == NULL) {
         WARN("Failure to retrieve ec_point\n");
@@ -1971,17 +2118,17 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
         goto err;
     }
 
-    if ((qat_BN_to_FB(&(opData->m), m) != 1) ||
-        (qat_BN_to_FB(&(opData->xg), xg) != 1) ||
-        (qat_BN_to_FB(&(opData->yg), yg) != 1) ||
-        (qat_BN_to_FB(&(opData->a), a) != 1) ||
-        (qat_BN_to_FB(&(opData->b), b) != 1) ||
-        (qat_BN_to_FB(&(opData->q), p) != 1) ||
-        (qat_BN_to_FB(&(opData->n), order) != 1) ||
-        (qat_BN_to_FB(&(opData->r), (BIGNUM *)sig_r) != 1) ||
-        (qat_BN_to_FB(&(opData->s), (BIGNUM *)sig_s) != 1) ||
-        (qat_BN_to_FB(&(opData->xp), xp) != 1) ||
-        (qat_BN_to_FB(&(opData->yp), yp) != 1)) {
+    if ((qat_BN_to_FB(&(opData->m), m, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->xg), xg, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->yg), yg, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->a), a, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->b), b, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->q), p, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->n), order, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->r), (BIGNUM *)sig_r, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->s), (BIGNUM *)sig_s, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->xp), xp, qat_svm) != 1) ||
+        (qat_BN_to_FB(&(opData->yp), yp, qat_svm) != 1)) {
         WARN("Failed to convert m, xg, yg, a, b, p, order, sig_r, sig_s, xp or yp to a flatbuffer\n");
         QATerr(QAT_F_QAT_ECDSA_DO_VERIFY,
                QAT_R_CURVE_COORDINATE_PARAMS_CONVERT_TO_FB_FAILURE);
@@ -1996,7 +2143,7 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
      */
 
     if (opData->a.pData == NULL && opData->a.dataLenInBytes == 0) {
-        opData->a.pData = qaeCryptoMemAlloc(1, __FILE__, __LINE__);
+        opData->a.pData = qat_mem_alloc(1, qat_svm, __FILE__, __LINE__);
         if (opData->a.pData == NULL) {
             WARN("Failure to allocate opData->a.pData\n");
             QATerr(QAT_F_QAT_ECDSA_DO_VERIFY, QAT_R_OPDATA_DATA_MALLOC_FAILURE);
@@ -2015,7 +2162,11 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
             goto err;
     }
 
+#ifdef QAT_BORINGSSL
+    qat_init_op_done(&op_done, qat_svm);
+#else
     qat_init_op_done(&op_done);
+#endif
     if (op_done.job != NULL) {
         if (qat_setup_async_event_notification(op_done.job) == 0) {
             WARN("Failure to setup async event notifications\n");
@@ -2025,10 +2176,10 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
         }
     }
 
-    CRYPTO_QAT_LOG("AU - %s\n", __func__);
     do {
-        if ((inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_ASYM))
-             == QAT_INVALID_INSTANCE) {
+        if (status == CPA_STATUS_RETRY &&
+           (inst_num = get_instance(QAT_INSTANCE_ASYM, qat_svm))
+            == QAT_INVALID_INSTANCE) {
             WARN("Failure to get another instance\n");
             if (qat_get_sw_fallback_enabled()) {
                 CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
@@ -2036,14 +2187,12 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
             } else {
                 QATerr(QAT_F_QAT_ECDSA_DO_VERIFY, ERR_R_INTERNAL_ERROR);
             }
-            if (op_done.job != NULL) {
+            if (op_done.job != NULL)
                 qat_clear_async_event_notification(op_done.job);
-            }
             qat_cleanup_op_done(&op_done);
             goto err;
         }
 
-        CRYPTO_QAT_LOG("AU - %s\n", __func__);
         DUMP_ECDSA_VERIFY(qat_instance_handles[inst_num], opData);
         status = cpaCyEcdsaVerify(qat_instance_handles[inst_num],
                                   qat_ecdsaVerifyCallbackFn,
@@ -2153,19 +2302,18 @@ int qat_ecdsa_do_verify(const unsigned char *dgst, int dgst_len,
     qat_cleanup_op_done(&op_done);
 
  err:
-
     if (opData) {
-        QAT_CHK_QMFREE_FLATBUFF(opData->r);
-        QAT_CHK_QMFREE_FLATBUFF(opData->s);
-        QAT_CHK_QMFREE_FLATBUFF(opData->n);
-        QAT_CHK_QMFREE_FLATBUFF(opData->m);
-        QAT_CHK_QMFREE_FLATBUFF(opData->xg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->yg);
-        QAT_CHK_QMFREE_FLATBUFF(opData->a);
-        QAT_CHK_QMFREE_FLATBUFF(opData->b);
-        QAT_CHK_QMFREE_FLATBUFF(opData->q);
-        QAT_CHK_QMFREE_FLATBUFF(opData->xp);
-        QAT_CHK_QMFREE_FLATBUFF(opData->yp);
+        QAT_MEM_FREE_FLATBUFF(opData->r, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->s, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->n, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->m, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->xg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->yg, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->a, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->b, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->q, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->xp, qat_svm);
+        QAT_MEM_FREE_FLATBUFF(opData->yp, qat_svm);
         OPENSSL_free(opData);
     }
 

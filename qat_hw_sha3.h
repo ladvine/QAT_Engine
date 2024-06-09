@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -108,6 +108,7 @@ typedef struct {
     CpaFlatBuffer src_buffer;
     unsigned char digest_data[EVP_MAX_MD_SIZE];
     int md_size;             /* output length, variable in XOF */
+    int qat_svm;
 } qat_sha3_ctx;
 
 # ifdef QAT_OPENSSL_PROVIDER

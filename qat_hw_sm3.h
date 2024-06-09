@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -88,13 +88,16 @@ typedef struct {
     int *data_refs;             /* The count of the resource reference */
     unsigned char *data;        /* The buffer */
     unsigned int num;           /* The data left in buffer */
-    unsigned int rcv_count;     /* The data recived */
+    unsigned int rcv_count;     /* The data received */
 
     CpaCySymSessionSetupData *session_data;
     CpaCySymSessionCtx session_ctx;
     CpaCySymOpData *pOpData;
     CpaBufferList pSrcBufferList; /* For QAT metadata */
     unsigned char *digest_data;
+    EVP_MD *sw_md;
+    EVP_MD_CTX *sw_md_ctx;
+    int qat_svm;
 } QAT_SM3_CTX;
 
 /* Totally 3 memory sections in application data, common EVP_MD,
@@ -104,5 +107,16 @@ typedef struct {
 
 const EVP_MD *qat_hw_create_sm3_meth(int nid, int key_type);
 
+#  ifndef QAT_OPENSSL_PROVIDER
+int qat_hw_sm3_init(EVP_MD_CTX *ctx);
+int qat_hw_sm3_update(EVP_MD_CTX *ctx, const void *in, size_t len);
+int qat_hw_sm3_final(EVP_MD_CTX *ctx, unsigned char *md);
+#  else
+int qat_hw_sm3_init(void *ctx);
+int qat_hw_sm3_update(void *ctx, const void *in, size_t len);
+int qat_hw_sm3_copy(QAT_SM3_CTX *to, const QAT_SM3_CTX *from);
+int qat_hw_sm3_final(void *ctx, unsigned char *md);
+int qat_hw_sm3_cleanup(QAT_SM3_CTX *ctx);
+#  endif /* QAT_OPENSSL_PROVIDER */
 # endif                         /* ENABLE_QAT_HW_SM3 */
 #endif                          /* QAT_HW_SM3_H */

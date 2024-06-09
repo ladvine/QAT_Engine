@@ -4,7 +4,7 @@
 %global enginesdir %(pkg-config --variable=enginesdir libcrypto)
 
 Name:           qatengine
-Version:        1.2.0
+Version:        1.6.0
 Release:        1%{?dist}
 Summary:        Intel QuickAssist Technology (QAT) OpenSSL Engine
 
@@ -70,6 +70,33 @@ openssl engine -v %{name}
 %{enginesdir}/%{name}.so
 
 %changelog
+* Thu Mar 14 2024 Jaya Naga Venkata Sudhakar <bavirisettyx.jaya.naga.venkata.sudhakar@intel.com> - 1.6.0-1
+- Update to qatengine v1.6.0
+
+* Fri Jan 26 2024 Fedora Release Engineering <releng@fedoraproject.org> - 1.5.0-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_40_Mass_Rebuild
+
+* Mon Jan 22 2024 Fedora Release Engineering <releng@fedoraproject.org> - 1.5.0-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_40_Mass_Rebuild
+
+* Mon Dec 25 2023 Jaya Naga Venkata Sudhakar <bavirisettyx.jaya.naga.venkata.sudhakar@intel.com> - 1.5.0-1
+- Update to qatengine v1.5.0
+
+* Wed Sep 13 2023 Yogaraj Alamenda <yogarajx.alamenda@intel.com> - 1.4.0-1
+- Update to qatengine v1.4.0
+
+* Tue Sep 12 2023 Yogaraj Alamenda <yogarajx.alamenda@intel.com> - 1.3.1-1
+- Update to qatengine v1.3.1
+
+* Fri Sep 08 2023 Giovanni Cabiddu <giovanni.cabiddu@intel.com> - 1.3.0-2
+- Rebuild due to qatlib so-version bump
+
+* Wed Aug 09 2023 Yogaraj Alamenda <yogarajx.alamenda@intel.com> - 1.3.0-1
+- Update to qatengine v1.3.0
+
+* Fri Jul 21 2023 Fedora Release Engineering <releng@fedoraproject.org> - 1.2.0-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_39_Mass_Rebuild
+
 * Wed Jun 14 2023 Yogaraj Alamenda <yogarajx.alamenda@intel.com> - 1.2.0-1
 - Update to qatengine v1.2.0
 

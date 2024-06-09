@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -160,4 +160,15 @@ int qat_adjust_thread_affinity(pthread_t threadptr);
  ******************************************************************************/
 int qat_set_instance_for_thread(long instanceNum);
 
+/******************************************************************************
+ * function:
+ *         void *qat_mem_alloc(size_t memsize, int inst_mem_type,
+ *                             const char *file, int line)
+ *
+ * description:
+ *   Wrapper funcation to memory allocation based on instance type (SVM or pinned
+ *   contiguous memory)
+ *
+ ******************************************************************************/
+void *qat_mem_alloc(size_t memsize, int inst_mem_type, const char *file, int line);
 #endif   /* QAT_FORK_H */

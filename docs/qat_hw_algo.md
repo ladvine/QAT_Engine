@@ -17,6 +17,9 @@
 | PRF | * | * | * | * |
 | AES-128-GCM | *** | *** | *** | *** |
 | AES-256-GCM | *** | *** | *** | *** |
+| AES-128-CCM | * | * | * | * |
+| AES-192-CCM |  |  | * | * |
+| AES-256-CCM |  |  | * | * |
 | AES128_CBC_HMAC_SHA1 | ** | ** | ** | ** |
 | AES256_CBC_HMAC_SHA1 | ** | ** | ** | ** |
 | AES128_CBC_HMAC_SHA256 | * | * | * | * |
@@ -26,10 +29,11 @@
 | ChachaPoly | | *** | *** | *** |
 | SM4-CBC |  | # | # |  |
 | SM3 | | *** | *** | |
+| SM2 | | *** | *** | |
 
 \* Enabled in the default build of qatengine for the specified platforms when `--with-qat_hw_dir` is provided in qatengine/qatprovider build configure.<br>
-\** Insecure algorithms which are disabled by default in QAT_HW driver version 1.7 & 1.8 and qatengine/qatprovider. Can be enabled using configure flag `--enable-qat_insecure_algorithms`. Driver will also needs to be built with the flag `./configure --enable-legacy-algorithms` to enable these algortihms at driver.<br>
+\** Insecure algorithms which are disabled by default in QAT_HW driver version 1.7 & 1.8 and qatengine/qatprovider. Can be enabled using configure flag `--enable-qat_insecure_algorithms`. Driver will also needs to be built with the flag `./configure --enable-legacy-algorithms` to enable these algorithms at driver.<br>
 \*** Algorithms disabled by default as those are experimental.<br>
-\# Disabled by default as it is specific to BabaSSL and not applicable to OpenSSL. To be enabled when qatengine is built with BabaSSL.
+\# Disabled by default as it is specific to Tongsuo and not applicable to OpenSSL. To be enabled when qatengine is built with Tongsuo.
 
 Please refer [config_options](config_options.md) on details about algorithm enable/disable flags.

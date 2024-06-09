@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -205,7 +205,7 @@ ASYNC_JOB *bssl_qat_async_load_current_job(void)
 #ifdef QAT_HW
 /* Duplicate op_done_t structure and set op_buf_free */
 static void *bssl_qat_copy_op_done(const void *op_done, unsigned int size,
-                            void (*buffers_free)(void *in_buf, void *out_buf))
+                            void (*buffers_free)(void *in_buf, void *out_buf, int qat_svm))
 {
     op_done_t *op_done_dup = OPENSSL_memdup(op_done, size);
     volatile ASYNC_JOB *job = op_done_dup->job;
@@ -560,7 +560,7 @@ int bssl_qat_async_ctx_copy_result(const async_ctx *ctx, unsigned char *buffer,
             bssl_memcpy(buffer, from->pData, bytes_len);
 
             /* Free output buffers allocated from build_decrypt_op_buf */
-            ctx->currjob->op_buf_free(NULL, from);
+            ctx->currjob->op_buf_free(NULL, from, ctx->currjob->qat_svm);
 #endif /* QAT_HW */
 
 #ifdef QAT_SW
@@ -597,7 +597,8 @@ int bssl_qat_before_wake_job(volatile ASYNC_JOB *job, int status, void *in_buf,
     /* Free input buffers allocated from build_decrypt_op_buf or
      * build_encrypt_op_buf, pointing to dec_op_data or enc_op_data
      */
-    job->op_buf_free(in_buf, NULL);
+    job->op_buf_free(in_buf, NULL, job->qat_svm);
+
 
     if (waitctx && waitctx->init && out_buf) {
         waitctx->data = out_buf;
@@ -610,7 +611,7 @@ int bssl_qat_before_wake_job(volatile ASYNC_JOB *job, int status, void *in_buf,
     /* Free output buffers allocated from build_decrypt_op_buf or
      * build_encrypt_op_buf, pointing to output_buffer
      */
-    job->op_buf_free(NULL, out_buf);
+    job->op_buf_free(NULL, out_buf, job->qat_svm);
     return 1; /* Fail */
 }
 
@@ -976,8 +977,8 @@ int bssl_private_key_method_update(EVP_PKEY *pkey)
                 return 1;
             }
 
-            privkey->pkey.rsa->meth->sign_raw = rsa_method->sign_raw;
-            privkey->pkey.rsa->meth->decrypt = rsa_method->decrypt;
+            EVP_PKEY_get0_RSA(pkey)->meth->sign_raw = rsa_method->sign_raw;
+            EVP_PKEY_get0_RSA(pkey)->meth->decrypt = rsa_method->decrypt;
             break;
         case EVP_PKEY_EC:
             if (!(default_algorithm_conf_flags & BSSL_QAT_METHOD_ECDSA)) {
@@ -987,7 +988,7 @@ int bssl_private_key_method_update(EVP_PKEY *pkey)
             if (!ec_method || !ec_method->sign) {
                 return 1;
             }
-            privkey->pkey.ec->ecdsa_meth = ec_method;
+            EVP_PKEY_get0_EC_KEY(pkey)->ecdsa_meth = ec_method;
             break;
         default:
             return 1;

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -63,8 +63,9 @@ typedef struct{
     OSSL_PROVIDER *prov;
 
     int refcnt;
+# if OPENSSL_VERSION_NUMBER < 0x30200000
     void *lock;
-
+# endif
     /* Constructor(s), destructor, information */
     OSSL_FUNC_keymgmt_new_fn *new;
     OSSL_FUNC_keymgmt_free_fn *free;

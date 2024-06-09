@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -119,7 +119,7 @@ static pthread_mutex_t crypto_bsal = PTHREAD_MUTEX_INITIALIZER;
 /* slot allocate signature */
 #define SIG_ALLOC          0xA1A2A3A4
 
-/* maxmium slot size */
+/* maximum slot size */
 #define MAX_ALLOC (SLAB_SIZE - sizeof(qae_slab) - QAE_BYTE_ALIGNMENT)
 #define MAX_EMPTY_SLAB     128
 
@@ -534,7 +534,7 @@ static void *crypto_alloc_from_slab(int size, const char *file, int line)
     slt->file = strdup(file);
     slt->line = line;
 
-   /* increase the reference couter */
+   /* increase the reference counter */
     slb->used_slots++;
     /* get the available slot from the head of available slab list */
     slb->next_slot = slt->next;

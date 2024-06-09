@@ -18,7 +18,7 @@
 * Symmetric Chained Cipher acceleration with pipelining capability:
     * AES128-CBC-HMAC-SHA1/AES256-CBC-HMAC-SHA1.
     * AES128-CBC-HMAC-SHA256/AES256-CBC-HMAC-SHA256.
-* Symmetric ciphers AES128-GCM and AES256-GCM
+* Symmetric ciphers AES128-CCM, AES128-GCM and AES256-GCM
 * Pseudo Random Function (PRF) Acceleration.
 * [HMAC Key Derivation Function (HKDF) Acceleration.](qat_hw.md#intel-qat-openssl-engine-hkdf-support)
 * [Pipelined Operations](qat_hw.md#using-the-openssl-pipelining-capability)
@@ -30,7 +30,10 @@
   *  SM4-CBC (Not supported in qatlib)
   *  SHA3-224/256/384/512
   *  ChaCha20-Poly1305
+  *  SM2 (Not supported in qatlib)
   *  SM3 (Not supported in qatlib)
+  *  AES128-CCM, AES192-CCM and AES256-CCM
+* [Key Protection Technology (KPT) Support using QAT_HW driver v2.0](qat_hw_kpt.md)
 
 Please refer [here](qat_hw_algo.md) for supported platforms list and default behaviour.
 
@@ -45,15 +48,16 @@ Please refer [here](qat_hw_algo.md) for supported platforms list and default beh
         * NIST Prime Curves: P-256/P-384
         * SM2
     * SM3 Hash Support using 16 Multibuffer requests (Experimental)
-    * SM4-CBC Support using 16 Multibuffer requests (BabaSSL only)
-    * SM4-GCM Support using 16 Multibuffer requests (BabaSSL only)
-    * SM4-CCM Support using 16 Multibuffer requests (BabaSSL only)
+    * SM4-CBC Support using 16 Multibuffer requests (Tongsuo only)
+    * SM4-GCM Support using 16 Multibuffer requests (Tongsuo only)
+    * SM4-CCM Support using 16 Multibuffer requests (Tongsuo only)
     * AES128-GCM, AES192-GCM and AES256-GCM
 
 ## Common Features to qat_hw & qat_sw
-* [QAT_HW & QAT_SW Co-existence with runtime configuration](qat_common.md#qat-hw-and-qat-sw-co-existence)
+* [QAT_HW & QAT_SW Co-existence with runtime configuration](qat_coex.md#qat-hw-and-qat-sw-co-existence)
 * [OpenSSL 3.0 Provider Support](qat_common.md#openssl-30-provider-support)
 * [FIPS 140-3 Certification requirements Support using QAT Provider](qat_common.md#fips-140-3-certification-requirements-support-using-qat-provider)
+* [Binary RPM Package](qat_common.md#binary-rpm-package)
 
 Note: RSA Padding schemes are handled by OpenSSL\* or BoringSSL\* rather than accelerated, so the
 engine supports the same padding schemes as OpenSSL\* or BoringSSL\* does natively.

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -63,10 +63,9 @@
 # include "qat_provider.h"
 # include "qat_hw_hkdf.h"
 # include "e_qat.h"
-
+# include "qat_prov_hkdf_packet.h"
 # define HKDF_MAXBUF 1024
 
-typedef _Atomic int CRYPTO_REF_COUNT;
 typedef void CRYPTO_RWLOCK;
 
 struct kdf_data_st {
@@ -109,6 +108,27 @@ typedef struct {
     EVP_PKEY_CTX *evp_pkey_ctx;
 } QAT_KDF_HKDF;
 
+struct evp_kdf_st {
+    OSSL_PROVIDER *prov;
+    int name_id;
+    char *type_name;
+    const char *description;
+    CRYPTO_REF_COUNT refcnt;
+    CRYPTO_RWLOCK *lock;
+
+    OSSL_FUNC_kdf_newctx_fn *newctx;
+    OSSL_FUNC_kdf_dupctx_fn *dupctx;
+    OSSL_FUNC_kdf_freectx_fn *freectx;
+    OSSL_FUNC_kdf_reset_fn *reset;
+    OSSL_FUNC_kdf_derive_fn *derive;
+    OSSL_FUNC_kdf_gettable_params_fn *gettable_params;
+    OSSL_FUNC_kdf_gettable_ctx_params_fn *gettable_ctx_params;
+    OSSL_FUNC_kdf_settable_ctx_params_fn *settable_ctx_params;
+    OSSL_FUNC_kdf_get_params_fn *get_params;
+    OSSL_FUNC_kdf_get_ctx_params_fn *get_ctx_params;
+    OSSL_FUNC_kdf_set_ctx_params_fn *set_ctx_params;
+};
+typedef struct evp_kdf_st EVP_KDF;
 
 struct evp_pkey_ctx_st {
     /* Actual operation */
@@ -213,5 +233,6 @@ struct evp_pkey_ctx_st {
     BIGNUM *rsa_pubexp;
 } /* EVP_PKEY_CTX */ ;
 
+int qat_get_cipher_suite(QAT_HKDF_CTX * qat_hkdf_ctx);
 # endif /* ENABLE_QAT_HW_HKDF */
 #endif /* QAT_PROV_HKDF_H */

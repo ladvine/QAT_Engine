@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -51,8 +51,8 @@
 # include <openssl/bio.h>
 # include <openssl/core_dispatch.h>
 
-# define QAT_PROVIDER_VERSION_STR "v1.2.0"
-# define QAT_PROVIDER_FULL_VERSION_STR "QAT Provider v1.2.0"
+# define QAT_PROVIDER_VERSION_STR "v1.5.0"
+# define QAT_PROVIDER_FULL_VERSION_STR "QAT Provider v1.5.0"
 
 # if defined(QAT_HW) && defined(QAT_SW)
 #  define QAT_PROVIDER_NAME_STR "QAT Provider for QAT_HW and QAT_SW"
@@ -66,11 +66,17 @@
 # define QAT_NAMES_AES_128_GCM "AES-128-GCM"
 # define QAT_NAMES_AES_192_GCM "AES-192-GCM"
 # define QAT_NAMES_AES_256_GCM "AES-256-GCM"
+# define QAT_NAMES_AES_128_CCM "AES-128-CCM"
+# define QAT_NAMES_AES_192_CCM "AES-192-CCM"
+# define QAT_NAMES_AES_256_CCM "AES-256-CCM"
 # define QAT_NAMES_AES_128_CBC_HMAC_SHA1 "AES-128-CBC-HMAC-SHA1"
 # define QAT_NAMES_AES_256_CBC_HMAC_SHA1 "AES-256-CBC-HMAC-SHA1"
 # define QAT_NAMES_AES_128_CBC_HMAC_SHA256 "AES-128-CBC-HMAC-SHA256"
 # define QAT_NAMES_AES_256_CBC_HMAC_SHA256 "AES-256-CBC-HMAC-SHA256"
 # define QAT_NAMES_CHACHA20_POLY1305 "ChaCha20-Poly1305"
+# define QAT_NAMES_SM4_CCM "SM4-CCM:1.2.156.10197.1.104.9"
+# define QAT_NAMES_SM4_GCM "SM4-GCM:1.2.156.10197.1.104.8"
+# define QAT_NAMES_SM4_CBC "SM4-CBC:SM4:1.2.156.10197.1.104.2"
 
 # define QAT_NAMES_SHA2_224 "SHA2-224:SHA-224:SHA224:2.16.840.1.101.3.4.2.4"
 # define QAT_NAMES_SHA2_256 "SHA2-256:SHA-256:SHA256:2.16.840.1.101.3.4.2.1"
@@ -81,6 +87,7 @@
 # define QAT_NAMES_SHA3_256 "SHA3-256:2.16.840.1.101.3.4.2.8"
 # define QAT_NAMES_SHA3_384 "SHA3-384:2.16.840.1.101.3.4.2.9"
 # define QAT_NAMES_SHA3_512 "SHA3-512:2.16.840.1.101.3.4.2.10"
+# define QAT_NAMES_SM3 "SM3:1.2.156.10197.1.401"
 # define ALGC(NAMES, FUNC, CHECK) { { NAMES, QAT_DEFAULT_PROPERTIES, FUNC }, CHECK }
 # define ALG(NAMES, FUNC) ALGC(NAMES, FUNC, NULL)
 

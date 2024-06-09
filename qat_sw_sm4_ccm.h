@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -63,17 +63,18 @@
 #define SM4_KEY_SCHEDULE  32
 
 /* babassl flags needed for sw method */
-#define CUSTOM_CCM_FLAGS    (EVP_CIPH_FLAG_DEFAULT_ASN1 \
+#define CUSTOM_CCM_FLAGS (EVP_CIPH_FLAG_DEFAULT_ASN1 | EVP_CIPH_FLAG_AEAD_CIPHER \
                          | EVP_CIPH_CUSTOM_IV | EVP_CIPH_FLAG_CUSTOM_CIPHER \
                          | EVP_CIPH_ALWAYS_CALL_INIT | EVP_CIPH_CTRL_INIT \
-                         | EVP_CIPH_CUSTOM_COPY | EVP_CIPH_CUSTOM_IV_LENGTH)
+                         | EVP_CIPH_CUSTOM_COPY | EVP_CIPH_CUSTOM_IV_LENGTH \
+                         | EVP_CIPH_CCM_MODE)
 
 typedef struct {
     SM4_CCM_CTX_mb16 mb_ccmctx;
     int init_flag;
 
     unsigned char* key;
-    char key_len;
+    int key_len;
     int key_set;                        /* Set if key initialized */
 
     unsigned char* tls_aad;
@@ -129,6 +130,23 @@ typedef struct {
     CCM128_CONTEXT ccm;
     ccm128_f str;
 } EVP_SM4_CCM_CTX;
+
+#  ifdef QAT_OPENSSL_PROVIDER
+int qat_sw_sm4_ccm_init(void *ctx, const unsigned char *key,
+                        int keylen, const unsigned char *iv,
+                        int ivlen, int enc);
+int qat_sw_sm4_ccm_ctrl(void *ctx, int type, int p1, void *p2);
+int qat_sw_sm4_ccm_do_cipher(void *ctx, unsigned char* out, size_t *padlen,
+                         size_t outsize, const unsigned char* in, size_t len);
+int qat_sw_sm4_ccm_cleanup(void *ctx);
+#  else
+int qat_sw_sm4_ccm_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
+        const unsigned char *iv, int enc);
+int qat_sw_sm4_ccm_ctrl(EVP_CIPHER_CTX *ctx, int type, int p1, void *p2);
+int qat_sw_sm4_ccm_do_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
+        const unsigned char *in, size_t len);
+int qat_sw_sm4_ccm_cleanup(EVP_CIPHER_CTX *ctx);
+#  endif /* QAT_OPENSSL_PROVIDER */
 
 void process_mb_sm4_ccm_encrypt_reqs(mb_thread_data *tlv);
 void process_mb_sm4_ccm_decrypt_reqs(mb_thread_data *tlv);

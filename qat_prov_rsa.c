@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -157,7 +157,7 @@ void QAT_RSA_free(RSA *r)
 
 #ifdef ENABLE_QAT_FIPS
     qat_fips_key_zeroize = 1;
-	qat_fips_get_key_zeroize_status();
+    qat_fips_get_key_zeroize_status();
 #endif
 }
 

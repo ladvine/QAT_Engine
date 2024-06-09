@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -134,7 +134,7 @@ void *qaeCryptoMemRealloc(void *ptr, size_t memsize, const char *file,
  * @param[in] memsize, the amount of memory in bytes to be allocated
  * @param[in] original_size, original size
  * @param[in] file, the C source filename of the call site
- * @param[in] line, the line number withing the C source file of the call site
+ * @param[in] line, the line number within the C source file of the call site
  *
  * @retval pointer to the allocated memory
  *

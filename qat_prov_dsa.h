@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -66,7 +66,7 @@
 #define OSSL_MAX_PROPQUERY_SIZE 256    /* Property query strings */
 #define OSSL_MAX_ALGORITHM_ID_SIZE 256 /* AlgorithmIdentifier DER */
 
-typedef int CRYPTO_REF_COUNT;
+typedef int CRYPTO_REFERENCE_COUNT;
 #define FFC_UNVERIFIABLE_GINDEX -1
 #define FFC_PARAM_FLAG_VALIDATE_PQ 0x01
 #define FFC_PARAM_FLAG_VALIDATE_G 0x02
@@ -131,7 +131,7 @@ struct dsa_st
     int flags;
     /* Normally used to cache montgomery values */
     BN_MONT_CTX *method_mont_p;
-    CRYPTO_REF_COUNT references;
+    CRYPTO_REFERENCE_COUNT references;
 #ifndef FIPS_MODULE
     CRYPTO_EX_DATA ex_data;
 #endif

@@ -42,6 +42,8 @@ Installation consists of the following:
 <details>
 <summary markdown="span">Install Prerequisites</summary>
 
+<br> Switch to Build the Intel® QuickAssist Technology OpenSSL* Engine - Example 5  and use the `make depend` target to clone and build the latest compatible versions of the dependant libraries automatically based on the target in the QAT Engine build configure.
+
 <details>
 <summary markdown="span">qat_hw Prerequisites </summary>
 
@@ -99,6 +101,8 @@ of QAT_HW Version 1.7 driver only.
 ./configure --enable-icp-thread-specific-usdm --enable-128k-slab
 ```
 
+**Note:** See [Limitations and Known Issues](docs/limitations.md) for multithreaded limitations, including performance with OpenSSL.
+
 #### Example contiguous memory driver - qat\_contig\_mem
 
 This step is not required if using the default USDM driver above. The Intel&reg;
@@ -110,7 +114,7 @@ option `--enable-qat_hw_contig_mem` that tells the build that the Intel&reg;
 QAT OpenSSL\* Engine should be compiled to use the qat_contig_mem component
 instead of the USDM memory driver above.
 
-Building and loading the qat_contig_mem driver assumming:
+Building and loading the qat_contig_mem driver assuming:
 
 * The Intel&reg; QAT OpenSSL\* Engine was cloned to its own location at the
   root of the drive: `/`.
@@ -132,21 +136,40 @@ following:
     Hello world!
     # PASS Verify for QAT Contig Mem Test
 
+#### Shared Virtual Memory
+
+QAT gen4 devices(4xxx) supports Shared Virtual Memory (SVM) that allows the use
+of unpinned user space memory avoiding the memcpy of buffers to pinned contiguous memory.
+The SVM support in the driver enables passing of virtual addresses to the QAT hardware for
+processing acceleration requests, i.e. addresses are the same virtual addresses used in
+the calling process supporting Zero-copy. This Support in the QAT Engine can be enabled
+dynamically by setting `SvmEnabled = 1` and `ATEnabled = 1` in the QAT PF and VF device's
+driver config file(s) along with other prerequistes mentioned below.
+
+### Prerequisites
+
+The Following parameter needs to be enabled in BIOS and is supported only in
+QAT gen4 devices.
+
+* Support for Shared Virtual Memory with Intel IOMMU
+* Enable VT-d
+* Enable ATS
+
 </details>
 <details>
 <summary markdown="span">qat_sw Prerequisites<br></summary>
 
-- Verify qat_sw components are installed as described in [Sofware requirements](docs/software_requirements.md#qat_sw-requirements)
+- Verify qat_sw components are installed as described in [Software requirements](docs/software_requirements.md#qat_sw-requirements)
 
 </details>
 </details>
 <details>
-<summary>Install OpenSSL*    (Note this step is not required if OpenSSL* 1.1.1 or 3.0 is already installed)</summary>
+<summary>Install OpenSSL*    (Note this step is not required if OpenSSL* is already installed)</summary>
 
 ## Build OpenSSL\*
 
 This step is not required if building the Intel&reg; QAT OpenSSL\* Engine
-against system prebuilt OpenSSL\* 1.1.1 or 3.0. When using the prebuild system OpenSSL library
+against system prebuilt OpenSSL\* . When using the prebuild system OpenSSL library
 the engine library is installed in the system OpenSSL engines directory.
 
 Clone OpenSSL\* from Github\* at the following location:
@@ -154,8 +177,7 @@ Clone OpenSSL\* from Github\* at the following location:
     git clone https://github.com/openssl/openssl.git
 
 It is recommended to checkout and build against the OpenSSL\* git tag
-specified in the Software Requirements section. OpenSSL\* Version 1.1.1
-and 3.0 are only supported.
+specified in the Software Requirements section.
 
 Due to the nature of the Intel&reg; QAT OpenSSL\* Engine being a dynamic engine
 it can only be used with shared library builds of OpenSSL\*.
@@ -259,7 +281,7 @@ Here are a few example builds that demonstrate how the Intel&reg; QAT OpenSSL\*
 Engine can be configured to use qat_hw and/or qat_sw.
 
 <details>
-<summary>Example 1: qat_hw target with OpenSSL\* 1.1.1 or 3.0 built from source</summary>
+<summary>Example 1: qat_hw target with OpenSSL\* built from source</summary>
 <br>
 
 The following example is assuming:
@@ -268,7 +290,7 @@ The following example is assuming:
   of the drive: `/`.
 * The Intel&reg; QAT Driver version 1.7 or 2.0 was unpacked within `/QAT` and using
   the USDM component.
-* OpenSSL\* 1.1.1 or 3.0 built from source is being used and installed to `/usr/local/ssl`.
+* OpenSSL\* built from source is being used and installed to `/usr/local/ssl`.
 
 To build and install the Intel&reg; QAT OpenSSL\* Engine:
 
@@ -282,21 +304,21 @@ make install
 ```
 
 In the above example this will create the file `qatengine.so` and copy it to
-`/usr/local/ssl/lib/engines-1.1`.
+`/usr/local/ssl/lib64/engines-3`.
 
 For building QAT Engine against qatlib(intree driver) from source which is
 installed to default location "/usr/local" use `--with-qat_hw_dir=/usr/local`
 or provide the path that is used in the prefix to build qatlib.
 
-If qatlib is installed via RPM then `-with-qat_hw_dir` is not needed as
-qatengine automatically picks qatlib libraries and header from default
-location `/usr/lib64`.
+If qatlib is installed via RPM (both library and development headers) then
+`-with-qat_hw_dir` is not needed as qatengine automatically picks qatlib
+libraries and headers from the default location `/usr/lib64`.
 
 <br>
 </details>
 
 <details>
-<summary>Example 2: qat_hw target with Prebuilt OpenSSL\* 1.1.1 or 3.0</summary>
+<summary>Example 2: qat_hw target with Prebuilt OpenSSL\* </summary>
 <br>
 
 The following example is assuming:
@@ -305,7 +327,7 @@ The following example is assuming:
 * The Intel&reg; QAT Driver was unpacked within `/QAT` and using
   the USDM component.
 * Prebuilt OpenSSL\* (both library and devel RPM packages) are installed in
-  the system and the OpenSSL\* version is in the `1.1.1 or 3.0` series.
+  the system and the OpenSSL\* version is `3.0` or above.
 
 To build and install the Intel&reg; QAT OpenSSL\* Engine:
 
@@ -319,11 +341,16 @@ In the above example this will create the file `qatengine.so` and copy it to
 the engines dir of the system which can be checked using
 `pkg-config --variable=enginesdir libcrypto`.
 
+If qatlib is installed via RPM (both library and development headers) then
+`-with-qat_hw_dir` is not needed as qatengine automatically picks qatlib
+libraries and headers from the default location `/usr/lib64`.
+
+
 <br>
 </details>
 
 <details>
-<summary>Example 3: qat_hw + qat_sw target with Prebuilt OpenSSL\* 1.1.1 or 3.0</summary>
+<summary>Example 3: qat_hw + qat_sw target with Prebuilt OpenSSL\* </summary>
 <br>
 
 The following example is assuming:
@@ -333,7 +360,7 @@ The following example is assuming:
 * The Intel&reg; QAT Driver was unpacked within `/QAT` and using
   the USDM component.
 * Intel&reg; Multi-Buffer Crypto for IPsec Library was installed to the default path
-* OpenSSL\* 1.1.1 or 3.0 built from source is being used and installed to `/usr/local/ssl`.
+* OpenSSL\* built from source is being used and installed to `/usr/local/ssl`.
 
 To build and install the Intel&reg; QAT OpenSSL\* Engine:
 
@@ -348,7 +375,7 @@ make install
 ```
 
 - In the above example this will create the file `qatengine.so` and copy it to
-  `/usr/local/ssl/lib/engines-1.1`.
+  `/usr/local/ssl/lib64/engines-3`.
 - AES-GCM operations are handled by qat_sw
 - Other cryptographic operations are handled by qat_hw
 
@@ -356,7 +383,7 @@ make install
 </details>
 
 <details>
-<summary>Example 4: qat_sw target with Prebuilt OpenSSL\* 1.1.1 or 3.0 </summary>
+<summary>Example 4: qat_sw target with Prebuilt OpenSSL\* </summary>
 <br>
 
 The following example is assuming:
@@ -367,7 +394,7 @@ The following example is assuming:
   (/usr/local).
 * The Intel&reg; Multi-Buffer crypto for IPsec Library was installed to its
   default path (/usr/). (Optional if QAT SW AES-GCM support is not needed).
-* Prebuilt OpenSSL\* 1.1.1 or 3.0 from the system is used.
+* Prebuilt OpenSSL\* from the system is used.
 
 To build and install the Intel&reg; QAT OpenSSL\* Engine with QAT Software support:
 
@@ -386,6 +413,42 @@ in the config flag `--with-qat_sw_crypto_mb_install_dir` (for crypto_mb) and
 is not installed then their corresponding algorithm support is disabled
 (crypto_mb library for PKE algorithms and IPSec_mb library for AES-GCM).
 <br><br>
+</details>
+
+<details>
+<summary>Example 5: Using `make depend` for building dependant libraries and build QAT Engine
+<br>
+
+This QAT Engine supports building and installing the dependant libraries automatically when
+the make option `make depend` is specified before make which clones the latest release of
+dependant libraries (OpenSSL, QAT_HW(QAT1.7, QAT1.8 & QAT2.0 OOT Linux driver),
+QAT_SW(ipp-crypto & ipsec_mb) based on the flags enabled in the QAT Engine build configure.
+
+```bash
+cd /QAT_Engine
+git submodule update --init
+./configure \
+--with-qat_hw_dir=/QAT \  #For QAT_HW supported platforms
+--enable-qat_sw \ #For QAT_SW supported platforms
+--with-openssl_install_dir=/usr/local/ssl # OpenSSL install path
+make depend
+make
+make install
+```
+
+In the above example this will clone and install QAT Engine(qat_hw + qat_sw)
+along with their dependant libraries installed in the path specifed for QAT_HW
+and default path for QAT_SW (`/usr/local` for ipp-crypto & `/usr` for ipsec_mb) with
+qatengine.so library installed in the path `/usr/local/ssl/lib64/engines-3`.
+The dependant libaries are built and installed based on the QAT Engine build configure
+flags provided for qat_hw, qat_sw or qat_hw + qat_sw target using OpenSSL3.0.
+
+Please note `make depend` target is not supported in FreeBSD OS, Virtualized environment,
+BoringSSL, BabaSSL and qatlib dependency build. The Dependant library versions used are updated in
+[Software Requirements section](https://github.com/intel/QAT_Engine/blob/master/docs/software_requirements.md)
+and OpenSSL version is latest of 3.0
+
+<br>
 </details>
 
 <details>
@@ -410,7 +473,7 @@ QAT Engine generates dynamic libraries and currently enables Plock by preloading
        --with-openssl_install_dir=${OPENSSL_INSTALL_DIR}
 - Set the environment variable ‘LD_PRELOAD’ to use the plock optimization.
    eg: export LD_PRELOAD = ${OPENSSL_INSTALL_DIR}/lib/engine-1.1/libplock.so
-Note: The `LD_PRELOAD` must be set before launching the multithread Appliaction.
+Note: The `LD_PRELOAD` must be set before launching the multithread Application.
 
 <br>
 </details>
@@ -465,13 +528,13 @@ event driven polling support. Event driven config files are only supported in Li
 Once you have decided which config file you should use, or created your own you
 should follow the procedure below to install it:
 
-1. Stop the acceleration driver as decribed in the Section 3.4
+1. Stop the acceleration driver as described in the Section 3.4
    Starting/Stopping the Acceleration software from the
    Getting Started Guide available in [Intel&reg; QuickAssist Technology Driver](https://developer.intel.com/quickassist)
 
 2. Copy the appropriate `.conf` file to `/etc` for n number of QAT devices
 
-3. Start the acceleration driver as decribed in the Section 3.4
+3. Start the acceleration driver as described in the Section 3.4
    Starting/Stopping the Acceleration software from the
    Getting Started Guide available in [Intel&reg; QuickAssist Technology Driver](https://developer.intel.com/quickassist)
 </details>
@@ -482,7 +545,8 @@ should follow the procedure below to install it:
 ## Test the Intel&reg; QuickAssist Technology OpenSSL\* Engine
 
 Run this command to verify the Intel&reg; QAT OpenSSL\* Engine is loaded
-correctly:
+correctly: This should not be used to determine QAT Engine capabilities as
+it will not display all the algorithms that are supported in QAT Engine.
 
 ```text
 cd /path/to/openssl_install/bin
@@ -515,7 +579,7 @@ qat_sw target output will be:
 ```
 
 Detailed information about the engine specific messages is available [here](docs/engine_specific_messages.md).
-Also `./openssl engine -t -c -vvvv qatengine` gives brief decription about each ctrl command.
+Also `./openssl engine -t -c -vvvv qatengine` gives brief description about each ctrl command.
 <br>
 </details>
 <details>
@@ -593,6 +657,9 @@ that support for the tests.
 Additional information for testapp tests available with the help option
 `./testapp -help`
 </details>
+
+
+
 
 ## Troubleshooting
 Troubleshooting information is available [here](docs/troubleshooting.md).

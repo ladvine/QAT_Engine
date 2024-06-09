@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -61,12 +61,6 @@
 #include "cpa_cy_ln.h"
 
 #include "qat_hw_asym_common.h"
-#ifdef USE_QAT_CONTIG_MEM
-# include "qae_mem_utils.h"
-#endif
-#ifdef USE_USDM_MEM
-# include "qat_hw_usdm_inf.h"
-#endif
 #include "qat_utils.h"
 #include "e_qat.h"
 #include "qat_hw_callback.h"
@@ -74,6 +68,9 @@
 #include "qat_events.h"
 
 #define QAT_PERFORMOP_RETRIES 3
+#ifdef ENABLE_QAT_HW_SM2
+#define QAT_SM2_SIZE 32
+#endif
 
 /******************************************************************************
 * function:
@@ -82,13 +79,14 @@
 *
 * @param fb [OUT] - API flatbuffer structure pointer
 * @param bn [IN] - Big Number pointer
+* @param qat_svm [OUT] - Instance Memory type
 *
 * description:
 *   This function is used to transform the big number format to the flat buffer
 *   format. The function is used to deliver the RSA Public/Private key structure
 *   from OpenSSL layer to API layer.
 ******************************************************************************/
-int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn)
+int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn, int qat_svm)
 {
     if (unlikely((fb == NULL ||
                   bn == NULL ))) {
@@ -102,7 +100,10 @@ int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn)
         DEBUG("Datalen = 0, zero byte memory allocation\n");
         return 1;
     }
-    fb->pData = qaeCryptoMemAlloc(fb->dataLenInBytes, __FILE__, __LINE__);
+    if (!qat_svm)
+        fb->pData = qaeCryptoMemAlloc(fb->dataLenInBytes, __FILE__, __LINE__);
+    else
+        fb->pData = OPENSSL_zalloc(fb->dataLenInBytes);
     if (NULL == fb->pData) {
         fb->dataLenInBytes = 0;
         WARN("Failed to allocate fb->pData\n");
@@ -116,6 +117,42 @@ int qat_BN_to_FB(CpaFlatBuffer * fb, const BIGNUM *bn)
     BN_bn2bin(bn, fb->pData);
     return 1;
 }
+# if defined(QAT_OPENSSL_PROVIDER) && defined(ENABLE_QAT_HW_SM2)
+int qat_BN_to_FB_for_sm2(CpaFlatBuffer * fb, const BIGNUM *bn, int qat_svm)
+{
+    if (unlikely((fb == NULL ||
+                  bn == NULL ))) {
+        WARN("Invalid input params.\n");
+        return 0;
+    }
+    /* Memory allocate for flat buffer */
+    fb->dataLenInBytes = (Cpa32U) BN_num_bytes(bn);
+    if (0 == fb->dataLenInBytes) {
+        fb->pData = NULL;
+        DEBUG("Datalen = 0, zero byte memory allocation\n");
+        return 1;
+    }
+    if (fb->dataLenInBytes < QAT_SM2_SIZE)
+        fb->dataLenInBytes = fb->dataLenInBytes + (QAT_SM2_SIZE - fb->dataLenInBytes);
+    if (!qat_svm)
+        fb->pData = qaeCryptoMemAlloc(fb->dataLenInBytes, __FILE__, __LINE__);
+    else
+	fb->pData = OPENSSL_zalloc(fb->dataLenInBytes);
+
+    if (NULL == fb->pData) {
+        fb->dataLenInBytes = 0;
+        WARN("Failed to allocate fb->pData\n");
+        return 0;
+    }
+    /*
+     * BN_bn2in() converts the absolute value of big number into big-endian
+     * form and stores it at output buffer. the output buffer must point to
+     * BN_num_bytes of memory
+     */
+    BN_bn2bin(bn, fb->pData);
+    return 1;
+}
+#endif
 
 /* Callback to indicate QAT completion of bignum modular exponentiation */
 static void qat_modexpCallbackFn(void *pCallbackTag, CpaStatus status,
@@ -156,6 +193,7 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
     int iMsgRetry = getQatMsgRetryCount();
     useconds_t ulPollInterval = getQatPollInterval();
     thread_local_variables_t *tlv = NULL;
+    int qat_svm = QAT_INSTANCE_ANY;
 
     DEBUG(" - Started\n");
 
@@ -163,9 +201,23 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
     opData.exponent.pData = NULL;
     opData.modulus.pData = NULL;
 
-    if (qat_BN_to_FB(&opData.base, (BIGNUM *)base) != 1 ||
-        qat_BN_to_FB(&opData.exponent, (BIGNUM *)exp) != 1 ||
-        qat_BN_to_FB(&opData.modulus, (BIGNUM *)mod) != 1) {
+    if ((inst_num = get_instance(QAT_INSTANCE_ASYM, QAT_INSTANCE_ANY))
+            == QAT_INVALID_INSTANCE) {
+        WARN("Failed to get an instance\n");
+        if (qat_get_sw_fallback_enabled()) {
+            CRYPTO_QAT_LOG("Failed to get an instance - fallback to SW - %s\n", __func__);
+            *fallback = 1;
+        } else {
+            QATerr(QAT_F_QAT_MOD_EXP, ERR_R_INTERNAL_ERROR);
+        }
+        retval = 0;
+        goto exit;
+    }
+    qat_svm = !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
+
+    if (qat_BN_to_FB(&opData.base, (BIGNUM *)base, qat_svm) != 1 ||
+        qat_BN_to_FB(&opData.exponent, (BIGNUM *)exp, qat_svm) != 1 ||
+        qat_BN_to_FB(&opData.modulus, (BIGNUM *)mod, qat_svm) != 1) {
         WARN("Failed to convert base, exponent or modulus to flatbuffer\n");
         QATerr(QAT_F_QAT_MOD_EXP, QAT_R_BUF_CONV_FAIL);
         retval = 0;
@@ -173,8 +225,7 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
     }
 
     result.dataLenInBytes = BN_num_bytes(mod);
-    result.pData =
-        qaeCryptoMemAlloc(result.dataLenInBytes, __FILE__, __LINE__);
+    result.pData = qat_mem_alloc(result.dataLenInBytes, qat_svm, __FILE__, __LINE__);
     if (NULL == result.pData) {
         WARN("Failed to allocate result.pData\n");
         QATerr(QAT_F_QAT_MOD_EXP, QAT_R_RESULT_PDATA_ALLOC_FAIL);
@@ -190,7 +241,11 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
             goto exit;
     }
 
+#ifdef QAT_BORINGSSL
+    qat_init_op_done(&op_done,qat_svm);
+#else
     qat_init_op_done(&op_done);
+#endif
     if (op_done.job != NULL) {
         if (qat_setup_async_event_notification(op_done.job) == 0) {
             WARN("Failed to setup async event notifications\n");
@@ -202,7 +257,8 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
     }
 
     do {
-        if ((inst_num = get_next_inst_num(INSTANCE_TYPE_CRYPTO_ASYM))
+        if (status == CPA_STATUS_RETRY &&
+           (inst_num = get_instance(QAT_INSTANCE_ASYM, qat_svm))
             == QAT_INVALID_INSTANCE) {
             WARN("Failure to get an instance\n");
             if (qat_get_sw_fallback_enabled()) {
@@ -255,9 +311,8 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
         } else {
             QATerr(QAT_F_QAT_MOD_EXP, QAT_R_MOD_LN_MOD_EXP_FAIL);
         }
-        if (op_done.job != NULL) {
+        if (op_done.job != NULL)
             qat_clear_async_event_notification(op_done.job);
-        }
         retval = 0;
         qat_cleanup_op_done(&op_done);
         goto exit;
@@ -332,14 +387,10 @@ int qat_mod_exp(BIGNUM *res, const BIGNUM *base, const BIGNUM *exp,
 
  exit:
 
-    if (opData.base.pData)
-        qaeCryptoMemFree(opData.base.pData);
-    if (opData.exponent.pData)
-        qaeCryptoMemFree(opData.exponent.pData);
-    if (opData.modulus.pData)
-        qaeCryptoMemFree(opData.modulus.pData);
-    if (result.pData)
-        qaeCryptoMemFree(result.pData);
+    QAT_MEM_FREE_FLATBUFF(opData.base, qat_svm);
+    QAT_MEM_FREE_FLATBUFF(opData.exponent, qat_svm);
+    QAT_MEM_FREE_FLATBUFF(opData.modulus, qat_svm);
+    QAT_MEM_FREE_FLATBUFF(result, qat_svm);
 
     return retval;
 }

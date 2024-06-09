@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2023 Intel Corporation.
+ *   Copyright(c) 2023-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -182,14 +182,19 @@ void fips_result(void)
 
     for (i = 0; i < (int)OSSL_NELEM(st_kat_kdf_tests); ++i) {
         if ((qat_hw_hkdf_offload == 0
-             && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_256"))
+             && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXTRACT_256"))
             || (qat_hw_hkdf_offload == 0
-                && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_384"))
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXPAND_256"))
+            || (qat_hw_hkdf_offload == 0
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXTRACT_384"))
+            || (qat_hw_hkdf_offload == 0
+                && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXPAND_384"))
             || (qat_hw_prf_offload == 0
                 && !strcmp(st_kat_kdf_tests[i].desc, "TLS12_PRF_256"))
             || (qat_hw_prf_offload == 0
                 && !strcmp(st_kat_kdf_tests[i].desc, "TLS12_PRF_384")))
             continue;
+
 # ifdef QAT_DEBUG
         INFO("\t%s   : (%s)  :  %s\n", qat_kdf_result->desc[i],
              qat_kdf_result->type[i],
@@ -204,7 +209,10 @@ void fips_result(void)
             && !strcmp(st_kat_digest_tests[i].desc, "SHA3"))
             continue;
         if (qat_sw_sha_offload == 0
-            && !strcmp(st_kat_digest_tests[i].desc, "SHA2"))
+            && !strcmp(st_kat_digest_tests[i].desc, "SHA256"))
+            continue;
+        if (qat_sw_sha_offload == 0
+            && !strcmp(st_kat_digest_tests[i].desc, "SHA512"))
             continue;
 # ifdef QAT_DEBUG
         INFO("\t%s   : (%s)  :  %s\n", qat_digest_result->desc[i],
@@ -310,14 +318,22 @@ void fips_result(void)
 
         for (i = 0; i < (int)OSSL_NELEM(st_kat_kdf_tests); ++i) {
             if ((qat_hw_hkdf_offload == 0
-                 && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_256"))
+                 && !strcmp(st_kat_kdf_tests[i].desc, "TLS13_KDF_EXTRACT_256"))
                 || (qat_hw_hkdf_offload == 0
-                    && !strcmp(st_kat_kdf_tests[i].desc, "HKDF_384"))
+                    && !strcmp(st_kat_kdf_tests[i].desc,
+                               "TLS13_KDF_EXPAND_256"))
+                || (qat_hw_hkdf_offload == 0
+                    && !strcmp(st_kat_kdf_tests[i].desc,
+                               "TLS13_KDF_EXTRACT_384"))
+                || (qat_hw_hkdf_offload == 0
+                    && !strcmp(st_kat_kdf_tests[i].desc,
+                               "TLS13_KDF_EXPAND_384"))
                 || (qat_hw_prf_offload == 0
                     && !strcmp(st_kat_kdf_tests[i].desc, "TLS12_PRF_256"))
                 || (qat_hw_prf_offload == 0
                     && !strcmp(st_kat_kdf_tests[i].desc, "TLS12_PRF_384")))
                 continue;
+
 # ifdef QAT_DEBUG
             INFO("\t%s   : (%s)  :  %s\n", qat_async_kdf_result->desc[i],
                  qat_async_kdf_result->type[i],
@@ -332,7 +348,10 @@ void fips_result(void)
                 && !strcmp(st_kat_digest_tests[i].desc, "SHA3"))
                 continue;
             if (qat_sw_sha_offload == 0
-                && !strcmp(st_kat_digest_tests[i].desc, "SHA2"))
+                && !strcmp(st_kat_digest_tests[i].desc, "SHA256"))
+                continue;
+            if (qat_sw_sha_offload == 0
+                && !strcmp(st_kat_digest_tests[i].desc, "SHA512"))
                 continue;
 # ifdef QAT_DEBUG
             INFO("\t%s   : (%s)  :  %s\n", qat_async_digest_result->desc[i],
@@ -1048,7 +1067,7 @@ int qat_fips_self_test(void *qatctx, int ondemand, int co_ex_enabled)
     }
 
     if (co_ex_enabled) {
-        /* To make symetric algorithms run in HW Platform
+        /* To make symmetric algorithms run in HW Platform
          * when co-existence is enabled */
 # ifdef ENABLE_QAT_HW_GCM
         qat_hw_gcm_offload = 1;
@@ -1071,7 +1090,7 @@ int qat_fips_self_test(void *qatctx, int ondemand, int co_ex_enabled)
         DEBUG("\n=================== QAT HW self tests result ===========\n");
         fips_result();
 
-        /* Reset the values to make symetric algorithms run in SW Platform
+        /* Reset the values to make symmetric algorithms run in SW Platform
          * when co-existence is enabled */
 # ifdef ENABLE_QAT_SW_GCM
         qat_hw_gcm_offload = 0;
@@ -1080,7 +1099,7 @@ int qat_fips_self_test(void *qatctx, int ondemand, int co_ex_enabled)
 # ifdef ENABLE_QAT_SW_SHA2
         qat_sw_sha_offload = 1;
 # endif
-        /* To make asymetric algorithms run in SW Platform
+        /* To make asymmetric algorithms run in SW Platform
          * when co-existence is enabled */
 # ifdef ENABLE_QAT_SW_RSA
         qat_hw_rsa_offload = 0;
@@ -1122,7 +1141,7 @@ int qat_fips_self_test(void *qatctx, int ondemand, int co_ex_enabled)
         DEBUG("\n=================== QAT SW self tests result ===========\n");
         fips_result();
 
-        /* Reset the values to make asymetric algorithms run in HW Platform
+        /* Reset the values to make asymmetric algorithms run in HW Platform
          * when co-existence is enabled */
 # ifdef ENABLE_QAT_HW_RSA
         qat_hw_rsa_offload = 1;

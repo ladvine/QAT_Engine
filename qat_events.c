@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -72,12 +72,6 @@
 
 /* QAT includes */
 #ifdef QAT_HW
-# ifdef USE_QAT_CONTIG_MEM
-#  include "qae_mem_utils.h"
-# endif
-# ifdef USE_USDM_MEM
-#  include "qat_hw_usdm_inf.h"
-# endif
 # include "cpa.h"
 # include "cpa_types.h"
 #endif
@@ -299,7 +293,7 @@ int qat_wake_job(volatile ASYNC_JOB *job, int jobStatus)
 #ifdef __FreeBSD__
     struct kevent event;
 #else
-    /* Arbitary value '1' to write down the pipe to trigger event */
+    /* Arbitrary value '1' to write down the pipe to trigger event */
     uint64_t buf = 1;
 #endif
 
@@ -315,7 +309,7 @@ int qat_wake_job(volatile ASYNC_JOB *job, int jobStatus)
         {
             (*callback)(args);
         } else {
-            /* In this case, we assume that a possbile retry happened */
+            /* In this case, we assume that a possible retry happened */
             ASYNC_WAIT_CTX_set_status(waitctx, jobStatus);
         }
 

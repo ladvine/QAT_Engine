@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2020-2023 Intel Corporation.
+ *   Copyright(c) 2020-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
 /*****************************************************************************
  * @file qat_sw_rsa.h
  *
- * This file provides an RSA interface for Multi-buffer implemention of an
+ * This file provides an RSA interface for Multi-buffer implementation of an
  * OpenSSL engine
  *
  *****************************************************************************/

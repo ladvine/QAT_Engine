@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2019-2023 Intel Corporation.
+ *   Copyright(c) 2019-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,11 +49,13 @@
 
 # include <openssl/engine.h>
 # include <openssl/ossl_typ.h>
+# include "e_qat.h"
 
 # define AES_KEY_SIZE_128    16
 # define AES_KEY_SIZE_192    24
 # define AES_KEY_SIZE_256    32
 # define AES_GCM_BLOCK_SIZE  1
+# define AES_CCM_BLOCK_SIZE  1
 
 # define CHACHA_KEY_SIZE     32
 
@@ -126,27 +128,20 @@ int multibuff_x25519_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2);
 # endif
 
 # ifdef ENABLE_QAT_SW_SM3
+#  ifndef QAT_OPENSSL_PROVIDER
 int qat_sw_sm3_init(EVP_MD_CTX *ctx);
 int qat_sw_sm3_update(EVP_MD_CTX *ctx, const void *in, size_t len);
 int qat_sw_sm3_final(EVP_MD_CTX *ctx, unsigned char *md);
+#  else
+int qat_sw_sm3_init(QAT_SM3_CTX_mb *ctx);
+int qat_sw_sm3_update(QAT_SM3_CTX_mb *ctx, const void *in, size_t len);
+int qat_sw_sm3_final(QAT_SM3_CTX_mb *ctx, unsigned char *md);
+#  endif
 # endif
 
-# ifdef ENABLE_QAT_SW_SM4_GCM
-int qat_sw_sm4_gcm_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
-        const unsigned char *iv, int enc);
-int qat_sw_sm4_gcm_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void *ptr);
-int qat_sw_sm4_gcm_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
-        const unsigned char *in, size_t len);
-int qat_sw_sm4_gcm_cleanup(EVP_CIPHER_CTX *ctx);
-# endif
-
-# ifdef ENABLE_QAT_SW_SM4_CCM
-int qat_sw_sm4_ccm_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
-        const unsigned char *iv, int enc);
-int qat_sw_sm4_ccm_ctrl(EVP_CIPHER_CTX *ctx, int type, int p1, void *p2);
-int qat_sw_sm4_ccm_do_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
-        const unsigned char *in, size_t len);
-int qat_sw_sm4_ccm_cleanup(EVP_CIPHER_CTX *ctx);
+# if defined(ENABLE_QAT_SW_SM2) || defined(ENABLE_QAT_HW_SM2)
+extern const EVP_PKEY_METHOD *sw_sm2_pmeth;
+EVP_PKEY_METHOD *qat_create_sm2_pmeth(void);
 # endif
 
 int qat_pkey_methods(ENGINE *e, EVP_PKEY_METHOD **pmeth,
@@ -166,6 +161,7 @@ void qat_free_ciphers(void);
 int qat_ciphers(ENGINE *e, const EVP_CIPHER **cipher, const int **nids,
                 int nid);
 const EVP_CIPHER *qat_create_gcm_cipher_meth(int nid, int keylen);
+const EVP_CIPHER *qat_create_ccm_cipher_meth(int nid, int keylen);
 # ifndef ENABLE_QAT_SMALL_PKT_OFFLOAD
 #  define CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_DEFAULT 2048
 #  define CRYPTO_SMALL_PACKET_OFFLOAD_THRESHOLD_SM4_CBC 64
@@ -193,6 +189,9 @@ int RSA_private_decrypt_default(size_t flen, const uint8_t *from, uint8_t *to,
                                 RSA *rsa, int padding);
 
 #endif /* QAT_BORINGSSL */
+#ifdef ENABLE_QAT_HW_CCM
+const EVP_CIPHER *qat_ccm_cipher_sw_impl(int nid);
+#endif /* ENABLE_QAT_HW_CCM */
 
 #endif /* QAT_EVP_H */
 

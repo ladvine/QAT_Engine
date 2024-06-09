@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2020-2023 Intel Corporation.
+ *   Copyright(c) 2020-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -85,12 +85,6 @@
 #include <openssl/crypto.h>
 
 /* QAT includes */
-#ifdef USE_QAT_CONTIG_MEM
-# include "qae_mem_utils.h"
-#endif
-#ifdef USE_USDM_MEM
-# include "qat_hw_usdm_inf.h"
-#endif
 #include "cpa.h"
 #include "cpa_cy_im.h"
 #include "cpa_cy_common.h"
@@ -182,9 +176,25 @@ int is_instance_available(int inst_num)
     if (!qat_instance_details[inst_num].qat_instance_started)
         return 0;
 
+#ifdef ENABLE_QAT_HW_KPT
+    thread_local_variables_t * tlv = NULL;
+
+    tlv = qat_check_create_local_variables();
+    if (unlikely(NULL == tlv)) {
+        WARN("No local variables are available\n");
+        return 0;
+    }
+
+    /* Return 0 if the KPT isn't initialized or provisioned
+     * while using the WPK in the current request. */
+    if (tlv->kpt_wpk_in_use > -1 &&
+        (!is_kpt_mode() || 
+            !kpt_instance_available(inst_num, tlv->kpt_wpk_in_use)))
+        return 0;
+#endif
+
     return !qat_accel_details[qat_instance_details[inst_num].
-        qat_instance_info.
-        physInstId.packageId].qat_accel_reset_status;
+        qat_instance_info.physInstId.packageId].qat_accel_reset_status;
 }
 
 int is_any_device_available(void)
@@ -195,26 +205,25 @@ int is_any_device_available(void)
         return 0;
 
     for (device_num = 0; device_num < qat_num_devices; device_num++) {
-        if (qat_accel_details[device_num].qat_accel_reset_status == 0) {
+        if (qat_accel_details[device_num].qat_accel_reset_status == 0)
             return 1;
-        }
     }
 
     return 0;
 }
 
-int get_next_inst_num(int inst_type)
+int is_instance_svm(int inst_num)
+{
+    return !qat_instance_details[inst_num].qat_instance_info.requiresPhysicallyContiguousMemory;
+}
+
+int get_instance(int inst_type, int mem_type)
 {
     int inst_num = QAT_INVALID_INSTANCE;
     int apl_inst_count; /* Applicable Instance Count */
     int *inst_idx;
     unsigned int *inst_map;
 
-#ifdef QAT_HW_SET_INSTANCE_THREAD
-    int i = 0;
-    int match = 0;
-    unsigned int *qat_map_inst;
-#endif
     unsigned int inst_count = 0;
     thread_local_variables_t * tlv = NULL;
     /* See qat_use_signals() above for more info on why it is safe to
@@ -244,76 +253,55 @@ int get_next_inst_num(int inst_type)
     }
 
     if (0 == enable_instance_for_thread) {
-#ifdef QAT_HW_SET_INSTANCE_THREAD
-
-        if (inst_type == INSTANCE_TYPE_CRYPTO_ASYM) {
-            qat_map_inst = qat_map_asym_inst;
-        } else {
-            qat_map_inst = qat_map_sym_inst;
+        if (inst_type == QAT_INSTANCE_ASYM) { /* Asym Instance */
+            apl_inst_count = qat_asym_num_instance;
+            inst_idx = &tlv->qatAsymInstanceNumForThread;
+            inst_map = qat_map_asym_inst;
+        } else { /* Sym Instance */
+            apl_inst_count = qat_sym_num_instance;
+            inst_idx = &tlv->qatSymInstanceNumForThread;
+            inst_map = qat_map_sym_inst;
         }
 
-        if (qat_num_instances > (threadCount - 1)) {
-            qat_pthread_mutex_lock();
-            if (likely(qat_instance_handles && qat_num_instances)) {
-                if (threadCount == 0) {
-                    threadId[0] = tlv->threadId;
-                    inst_num = qat_map_inst[0];
-                    threadCount++;
-                } else {
-                    for (i = 0; i < threadCount; i++) {
-                        if (threadId[i] == tlv->threadId) {
-                            match = 1;
-                            break;
-                        }
-                    }
-                    if (match == 0) {
-                        threadId[threadCount] = tlv->threadId;
-                        inst_num = qat_map_inst[i];
-                        threadCount++;
-                    } else if(match == 1) {
-                        inst_num = qat_map_inst[i];
-                    }
-                }
-            }
-            qat_pthread_mutex_unlock();
-        } else {
-#endif
-            if (inst_type == INSTANCE_TYPE_CRYPTO_ASYM) { /* Asym Instance */
-                apl_inst_count = qat_asym_num_instance;
-                inst_idx = &tlv->qatAsymInstanceNumForThread;
-                inst_map = qat_map_asym_inst;
-            } else { /* Sym Instance */
-                apl_inst_count = qat_sym_num_instance;
-                inst_idx = &tlv->qatSymInstanceNumForThread;
-                inst_map = qat_map_sym_inst;
-            }
-
-            if (likely(qat_instance_handles && apl_inst_count)) {
+        if (likely(qat_instance_handles && apl_inst_count)) {
+            switch (mem_type) {
+            case QAT_INSTANCE_SVM:
+                do {
+                    inst_count++;
+                    *inst_idx = (*inst_idx + 1) % apl_inst_count;
+                } while (!is_instance_available(inst_map[*inst_idx]) && !is_instance_svm(inst_map[*inst_idx])
+                        && inst_count <= apl_inst_count);
+                break;
+            case QAT_INSTANCE_CONTIGUOUS:
+                do {
+                    inst_count++;
+                    *inst_idx = (*inst_idx + 1) % apl_inst_count;
+                } while (!is_instance_available(inst_map[*inst_idx]) && is_instance_svm(inst_map[*inst_idx])
+                        && inst_count <= apl_inst_count);
+                break;
+            default:
                 do {
                     inst_count++;
                     *inst_idx = (*inst_idx + 1) % apl_inst_count;
                 } while (!is_instance_available(inst_map[*inst_idx]) &&
                         inst_count <= apl_inst_count);
+                 break;
+        }
 
-                if (likely(inst_count <= apl_inst_count)) {
-                    inst_num = inst_map[*inst_idx];
-                }
-            }
-# ifdef QAT_HW_SET_INSTANCE_THREAD
-       }
-# endif
+
+        if (likely(inst_count <= apl_inst_count))
+                inst_num = inst_map[*inst_idx];
+        }
     } else {
-        if (inst_type == INSTANCE_TYPE_CRYPTO_ASYM) { /* Asym Instance */
+        if (inst_type == QAT_INSTANCE_ASYM) { /* Asym Instance */
             if (tlv->qatAsymInstanceNumForThread != QAT_INVALID_INSTANCE) {
-                if (is_instance_available(tlv->qatAsymInstanceNumForThread)) {
+                if (is_instance_available(tlv->qatAsymInstanceNumForThread))
                     inst_num = tlv->qatAsymInstanceNumForThread;
-                }
             }
         } else { /* Sym Instance */
             if (tlv->qatSymInstanceNumForThread != QAT_INVALID_INSTANCE) {
-                if (is_instance_available(tlv->qatSymInstanceNumForThread)) {
+                if (is_instance_available(tlv->qatSymInstanceNumForThread))
                     inst_num = tlv->qatSymInstanceNumForThread;
-                }
             }
         }
     }
@@ -323,7 +311,7 @@ int get_next_inst_num(int inst_type)
     }
 
     DEBUG("inst type: %s, inst_num = %d\n",
-        inst_type == INSTANCE_TYPE_CRYPTO_ASYM ? "ASYM" : "SYM", inst_num);
+            inst_type == QAT_INSTANCE_ASYM ? "ASYM" : "SYM", inst_num);
 
     return inst_num;
 }
@@ -357,8 +345,8 @@ thread_local_variables_t * qat_check_create_local_variables(void)
         return tlv;
     tlv = OPENSSL_zalloc(sizeof(thread_local_variables_t));
     if (tlv != NULL) {
-#ifdef QAT_HW_SET_INSTANCE_THREAD
-	tlv->threadId = pthread_self();
+#ifdef ENABLE_QAT_HW_KPT
+        tlv->kpt_wpk_in_use = KPT_INVALID_WPK_IDX;
 #endif
 
         tlv->qatAsymInstanceNumForThread = QAT_INVALID_INSTANCE;
@@ -436,7 +424,7 @@ static int qat_instance_sym_supported(CpaCyCapabilitiesInfo *pCapInfo)
 
 static int qat_instance_asym_supported(CpaCyCapabilitiesInfo *pCapInfo)
 {
-    /* For more detailed informations about these flags
+    /* For more detailed information about these flags
        go to check cpa_cy_im.h */
     if (pCapInfo->dhSupported ||
         pCapInfo->dsaSupported ||
@@ -470,10 +458,7 @@ static int qat_remap_instances()
     CpaCyCapabilitiesInfo instance_cap = {0};
     CpaCyCapabilitiesInfo *pCapInfo = &instance_cap;
     CpaStatus status;
-
-    int instNum;
-    int asym_idx = 0;
-    int sym_idx = 0;
+    int instNum = 0, asym_idx = 0, sym_idx = 0;
 
     /* For each instance, get its capability. */
     for (instNum = 0; instNum < qat_num_instances; instNum++) {
@@ -488,14 +473,12 @@ static int qat_remap_instances()
         /* If Asym supported */
         if (qat_instance_asym_supported(pCapInfo)) {
             qat_map_asym_inst[asym_idx] = instNum;
-
             asym_idx++;
         }
 
         /* If Sym supported */
         if (qat_instance_sym_supported(pCapInfo)) {
             qat_map_sym_inst[sym_idx] = instNum;
-
             sym_idx++;
         }
     }
@@ -511,74 +494,6 @@ static int qat_remap_instances()
 
     return 1;
 }
-
-#ifdef QAT_HW_SET_INSTANCE_THREAD
-/******************************************************************************
- * function:
- *         round_robin_per_device()
- *
- * description:
- *   The continous instances are always in a same device,
- *   remap the sequence to balance the load of device.
- *
- *****************************************************************************/
-static void round_robin_per_device(unsigned int *map_inst, int num_instances)
-{
-    int device_num;
-    int inst_idx;
-    int map_index;
-
-    unsigned int swapping_map[QAT_MAX_CRYPTO_INSTANCES];
-    unsigned int instance_count[QAT_MAX_CRYPTO_INSTANCES] = {0};
-
-    Cpa32U package_id;
-
-    /* Init swap map */
-    for (inst_idx = 0; inst_idx < QAT_MAX_CRYPTO_INSTANCES; inst_idx++) {
-        swapping_map[inst_idx] = QAT_INVALID_INSTANCE;
-    }
-
-    /* Count the number of instances for each device */
-    for (map_index = 0; map_index < num_instances; map_index++) {
-        inst_idx = map_inst[map_index];
-        package_id =
-          qat_instance_details[inst_idx].qat_instance_info.physInstId.packageId;
-        instance_count[package_id]++;
-    }
-
-    /* Round robin per device
-       A sample of original input
-       +---+---+---+---+---+---+---+---+---+
-       |     Dev 0     | Dev 1 |   Dev 2   |
-       +---+---+---+---+---+---+---+---+---+
-       | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
-       +---+---+---+---+---+---+---+---+---+
-       For each instance in device,
-       put the index into map with interval of totally-device-count.
-       +---+---+---+---+---+---+---+----+---+---+----+----+----+----+----+
-       | 0 | 4 | 6 | 1 | 5 | 7 | 2 | -1 | 8 | 3 | -1 | -1 | -1 | -1 | -1 |
-       +---+---+---+---+---+---+---+----+---+---+----+----+----+----+----+
-        Dev0        Dev0        Dev0         Dev0
-    */
-    map_index = 0;
-    for (device_num = 0; device_num < qat_num_devices; device_num++) {
-        for (inst_idx = 0; inst_idx < instance_count[device_num]; inst_idx++) {
-            swapping_map[qat_num_devices * inst_idx + device_num]
-                = map_inst[map_index];
-            map_index++;
-        }
-    }
-
-    /* Remove the invalid instances. */
-    map_index = 0;
-    for (inst_idx = 0; inst_idx < QAT_MAX_CRYPTO_INSTANCES; inst_idx++) {
-        if (swapping_map[inst_idx] != QAT_INVALID_INSTANCE) {
-            map_inst[map_index] = swapping_map[inst_idx];
-            map_index++;
-        }
-    }
-}
-#endif
 
 int qat_hw_init(ENGINE *e)
 {
@@ -603,7 +518,6 @@ int qat_hw_init(ENGINE *e)
     if ((err = pthread_key_create(&thread_local_variables, qat_local_variable_destructor)) != 0) {
         WARN("pthread_key_create failed: %s\n", strerror(err));
         QATerr(QAT_F_QAT_HW_INIT, QAT_R_PTHREAD_CREATE_FAILURE);
-        qat_pthread_mutex_unlock();
         return 0;
     }
 
@@ -615,7 +529,6 @@ int qat_hw_init(ENGINE *e)
         QATerr(QAT_F_QAT_HW_INIT, QAT_R_ICP_SAL_USERSTART_FAIL);
 # endif
         pthread_key_delete(thread_local_variables);
-        qat_pthread_mutex_unlock();
         return 0;
     }
 
@@ -726,8 +639,12 @@ int qat_hw_init(ENGINE *e)
 
         package_id = qat_instance_details[instNum].qat_instance_info.physInstId.packageId;
         qat_accel_details[package_id].qat_accel_present = 1;
-        if (package_id >= qat_num_devices) {
+        if (package_id >= qat_num_devices)
             qat_num_devices = package_id + 1;
+
+        if (!qat_instance_details[instNum].qat_instance_info.requiresPhysicallyContiguousMemory) {
+            qat_map_svm_inst[qat_svm_num_instance] = instNum;
+            ++qat_svm_num_instance;
         }
 
         /* Set the address translation function */
@@ -773,15 +690,14 @@ int qat_hw_init(ENGINE *e)
         return 0;
     }
 
-#ifdef QAT_HW_SET_INSTANCE_THREAD
-    round_robin_per_device(qat_map_asym_inst, qat_asym_num_instance);
-    round_robin_per_device(qat_map_sym_inst, qat_sym_num_instance);
 
+    qat_contig_num_instance = qat_num_instances - qat_svm_num_instance;
+    DEBUG("Instances %d, SVM instances %d, contig instances %d\n", qat_num_instances,
+           qat_svm_num_instance, qat_contig_num_instance);
     DUMP_INSTANCE_MAPPING("Asym sequence for thread mapping",
                           qat_map_asym_inst, qat_asym_num_instance);
     DUMP_INSTANCE_MAPPING("Sym sequence for thread mapping",
                           qat_map_sym_inst, qat_sym_num_instance);
-#endif
 
 #ifdef QAT_CPU_CYCLES_COUNT
     rdtsc_prof_init(&qat_hw_rsa_dec_req_prepare, 0);
@@ -843,16 +759,33 @@ int qat_hw_init(ENGINE *e)
         if (!qat_is_event_driven()) {
             if (pthread_mutex_lock(&qat_poll_mutex) == 0) {
                 while (!cleared_to_start){
-                   if (pthread_cond_wait(&qat_poll_condition, &qat_poll_mutex) != 0)
+                   if (pthread_cond_wait(&qat_poll_condition, &qat_poll_mutex) != 0) {
                        WARN("Failed to get conditional wait\n");
+		   }
+                   qat_cond_wait_started = 1;
                 }
-                if (pthread_mutex_unlock(&qat_poll_mutex) != 0)
+                if (pthread_mutex_unlock(&qat_poll_mutex) != 0) {
                     WARN("Failed to unlock conditional wait mutex \n");
-            }else {
+		}
+            } else {
                 WARN("Failed to lock conditional wait mutex \n");
             }
         }
     }
+
+#ifdef ENABLE_QAT_HW_KPT
+    /* Init KPT if KPT is enabled and hasn't be inited */
+    if (kpt_enabled && !kpt_inited) {
+        if (!qat_hw_kpt_init()) {
+            WARN("KPT init failed, please check\n");
+            qat_pthread_mutex_unlock();
+            qat_engine_finish(e);
+            return 0;
+        }
+        kpt_inited = 1;
+    }
+#endif
+
     return 1;
 }
 
@@ -866,6 +799,26 @@ int qat_hw_finish_int(ENGINE *e, int reset_globals)
 #endif
 
     DEBUG("---- QAT Finishing...\n\n");
+
+#ifdef ENABLE_QAT_HW_KPT
+    if (kpt_enabled) {
+        /* Finish KPT before engine finish if KPT is inited */
+        if (kpt_inited) {
+            DEBUG("Start KPT Finishing.\n");
+            qat_hw_kpt_finish();
+
+            /* kpt_enabled can't be zeroed, otherwise child processes won't
+             * do qat_hw_kpt_init while forking. 
+             * kpt_inited should be zeroed as the process is terminated. */
+            kpt_inited = 0;
+        }
+
+        DEBUG("Reset the loaded WPK file number.\n");
+        if (kpt_reset_wpk_num()) {
+            WARN("Failure in kpt_reset_wpk_num.\n");
+        }
+    }
+#endif
 
     qat_hw_keep_polling = 0;
     if (qat_use_signals_no_engine_start()) {
@@ -949,12 +902,13 @@ int qat_hw_finish_int(ENGINE *e, int reset_globals)
     pthread_key_delete(thread_local_variables);
     sem_destroy(&hw_polling_thread_sem); /* destroy qat hw semaphore: hw_polling_thread_sem. */
 
-    int res =0;
-    if ((res = pthread_mutex_unlock(&qat_poll_mutex)) != 0){
-         WARN("Unlocking of qat_poll_mutex failed. %d\n", res);
-    }
-    if ((res = pthread_cond_destroy(&qat_poll_condition)) != 0){
-        WARN("Destroying of qat_poll_condition failed. %d\n", res);
+    if (!enable_external_polling && !enable_inline_polling) {
+        if (!qat_is_event_driven()) {
+            int res =0;
+            if ((qat_cond_wait_started && (res = pthread_cond_destroy(&qat_poll_condition))) != 0) {
+                WARN("Destroying of qat_poll_condition failed. %d\n", res);
+            }
+	}
     }
 
     /* Reset the configuration global variables (to their default values) only
@@ -962,13 +916,20 @@ int qat_hw_finish_int(ENGINE *e, int reset_globals)
      * forking
      */
     if (reset_globals == 1) {
-	enable_inline_polling = 0;
+#ifdef ENABLE_QAT_HW_KPT
+        DEBUG("KPT reset globally\n");
+        kpt_inited = 0;
+        kpt_enabled = 0;
+#endif
+
+        enable_inline_polling = 0;
         enable_event_driven_polling = 0;
         enable_instance_for_thread = 0;
         enable_sw_fallback = 0;
         disable_qat_offload = 0;
         qat_poll_interval = QAT_POLL_PERIOD_IN_NS;
         qat_max_retry_count = QAT_CRYPTO_NUM_POLLING_RETRIES;
+	qat_cond_wait_started = 0;
     }
     return ret;
 }

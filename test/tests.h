@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -94,10 +94,6 @@ struct test_params_t {
 };
 typedef struct test_params_t TEST_PARAMS;
 
-struct async_additional_args_dsa {
-    int local_verify;
-};
-
 #ifdef QAT_OPENSSL_3
 struct async_args_callback {
     int job_ready;
@@ -132,6 +128,9 @@ void tests_run_hkdf(TEST_PARAMS *args);
 void tests_run_ecx(TEST_PARAMS *args);
 void tests_run_aes128_gcm(TEST_PARAMS *args);
 void tests_run_aes256_gcm(TEST_PARAMS *args);
+void tests_run_aes128_ccm(TEST_PARAMS *args);
+void tests_run_aes192_ccm(TEST_PARAMS *args);
+void tests_run_aes256_ccm(TEST_PARAMS *args);
 void tests_run_sha3(TEST_PARAMS *args);
 void tests_run_sm3(TEST_PARAMS *args);
 void tests_run_chacha20_poly1305(TEST_PARAMS *args);
@@ -139,6 +138,7 @@ void tests_run_sm4_cbc(TEST_PARAMS *args);
 void tests_run_sm4_gcm(TEST_PARAMS *args);
 void tests_run_sm4_ccm(TEST_PARAMS *args);
 void tests_run_sha2(TEST_PARAMS *args);
+void tests_run_sm2(TEST_PARAMS *args);
 
 char *ecdh_curve_name(int type);
 char *test_name(int test);
@@ -160,6 +160,9 @@ enum test_algorithms {
     TEST_HKDF,
     TEST_AES128_GCM,
     TEST_AES256_GCM,
+    TEST_AES128_CCM,
+    TEST_AES192_CCM,
+    TEST_AES256_CCM,
     TEST_SHA3_224,
     TEST_SHA3_256,
     TEST_SHA3_384,

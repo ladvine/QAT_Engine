@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2022-2023 Intel Corporation.
+ *   Copyright(c) 2022-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -169,7 +169,9 @@ struct evp_cipher_st {
     const char *description;
     OSSL_PROVIDER *prov;
     int refcnt;
+# if OPENSSL_VERSION_NUMBER < 0x30200000
     CRYPTO_RWLOCK *lock;
+# endif
     OSSL_FUNC_cipher_newctx_fn *newctx;
     OSSL_FUNC_cipher_encrypt_init_fn *einit;
     OSSL_FUNC_cipher_decrypt_init_fn *dinit;

@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2021-2023 Intel Corporation.
+ *   Copyright(c) 2021-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -50,7 +50,7 @@
 
 
 #include "qat_sw_sm2.h"
-
+#if defined(ENABLE_QAT_SW_SM2)
 typedef struct {
     /* Key and paramgen group */
     EC_GROUP *gen_group;
@@ -63,19 +63,16 @@ typedef struct {
     int id_set;
 } QAT_SM2_PKEY_CTX;
 
-static EVP_PKEY_METHOD *_hidden_sm2_pmeth = NULL;
-#ifndef QAT_OPENSSL_PROVIDER
-static const EVP_PKEY_METHOD *sw_sm2_pmeth = NULL;
-#endif
-
-#ifdef QAT_OPENSSL_3
+#if defined(QAT_OPENSSL_3) && defined(ENABLE_QAT_SW_SM2)
 typedef struct evp_signature_st {
     int name_id;
     char *type_name;
     const char *description;
     OSSL_PROVIDER *prov;
     int refcnt;
+# if OPENSSL_VERSION_NUMBER < 0x30200000
     void *lock;
+# endif
 
     OSSL_FUNC_signature_newctx_fn *newctx;
     OSSL_FUNC_signature_sign_init_fn *sign_init;
@@ -132,101 +129,6 @@ static QAT_EVP_SIGNATURE get_default_signature_sm2()
 }
 #endif
 
-#ifndef QAT_OPENSSL_PROVIDER
-# ifdef ENABLE_QAT_SW_SM2
-static int mb_sm2_init(EVP_PKEY_CTX *ctx);
-static int mb_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2);
-static void mb_sm2_cleanup(EVP_PKEY_CTX *ctx);
-static int mb_digest_custom(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx);
-# endif
-#endif
-
-/* Only used for OpenSSL 3 legacy engine API */
-#if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
-static int pkey_ec_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
-{
-    int (*pkeygen) (EVP_PKEY_CTX *ctx, EVP_PKEY *pkey) = NULL;
-    if ((sw_sm2_pmeth = EVP_PKEY_meth_find(EVP_PKEY_EC)) == NULL) {
-        WARN("Failed to generate sw_pmeth\n");
-        return -1;
-    }
-
-    EVP_PKEY_meth_get_keygen((EVP_PKEY_METHOD *)sw_sm2_pmeth, NULL, &pkeygen);
-    pkeygen(ctx, pkey);
-    *(int *)pkey = EVP_PKEY_SM2;
-    return 1;
-}
-#endif
-
-EVP_PKEY_METHOD *mb_sm2_pmeth(void)
-{
-    if (_hidden_sm2_pmeth && qat_sw_sm2_offload) {
-        if (!qat_reload_algo)
-            return _hidden_sm2_pmeth;
-        EVP_PKEY_meth_free(_hidden_sm2_pmeth);
-    }
-#ifndef QAT_OPENSSL_PROVIDER
-    /* EVP_PKEY_meth_copy doesn't copy digest_custom from SW method
-     * so directly returning sw method separately here */
-    if (sw_sm2_pmeth && !qat_sw_sm2_offload && !qat_reload_algo)
-       return (EVP_PKEY_METHOD *)sw_sm2_pmeth;
-
-    if ((_hidden_sm2_pmeth =
-                EVP_PKEY_meth_new(EVP_PKEY_SM2, 0)) == NULL) {
-        WARN("Failed to generate pmeth\n");
-        return NULL;
-    }
-# ifndef QAT_OPENSSL_3 /* Only used for OpenSSL 1.1.1 engine API */
-    if ((sw_sm2_pmeth = EVP_PKEY_meth_find(EVP_PKEY_SM2)) == NULL) {
-        WARN("Failed to generate sw_pmeth\n");
-        return NULL;
-    }
-# endif
-
-# ifdef ENABLE_QAT_SW_SM2
-    if (qat_sw_offload &&
-        (qat_sw_algo_enable_mask & ALGO_ENABLE_MASK_SM2) &&
-        mbx_get_algo_info(MBX_ALGO_X25519)) {
-        EVP_PKEY_meth_set_init(_hidden_sm2_pmeth, mb_sm2_init);
-# ifdef QAT_OPENSSL_3 /* Only used for OpenSSL 3 legacy engine API */
-        EVP_PKEY_meth_set_keygen(_hidden_sm2_pmeth, NULL, pkey_ec_keygen);
-# endif
-        EVP_PKEY_meth_set_cleanup(_hidden_sm2_pmeth, mb_sm2_cleanup);
-        EVP_PKEY_meth_set_ctrl(_hidden_sm2_pmeth, mb_sm2_ctrl, NULL);
-        EVP_PKEY_meth_set_digest_custom(_hidden_sm2_pmeth, mb_digest_custom);
-        EVP_PKEY_meth_set_digestsign(_hidden_sm2_pmeth, mb_ecdsa_sm2_sign);
-        EVP_PKEY_meth_set_digestverify(_hidden_sm2_pmeth, mb_ecdsa_sm2_verify);
-        qat_sw_sm2_offload = 1;
-        DEBUG("QAT SW SM2 registration succeeded\n");
-    }
-    else {
-        qat_sw_sm2_offload = 0;
-        DEBUG("QAT SW SM2 disabled\n");
-    }
-# endif
-
-    if (!qat_sw_sm2_offload) {
-        DEBUG("OpenSSL SW ECDSA SM2\n");
-        EVP_PKEY_meth_free(_hidden_sm2_pmeth);
-# ifndef QAT_OPENSSL_3
-        return (EVP_PKEY_METHOD *)sw_sm2_pmeth;
-# else
-        /* Although QAEngine supports software fallback to the default provider when
-        * using the OpenSSL 3 legacy engine API, if it fails during the registration
-        * phase, the pkey method cannot be set correctly because the OpenSSL3 legacy
-        * engine framework no longer provides a standard method for HKDF, PRF and SM2.
-        * So it will just return NULL.
-        * https://github.com/openssl/openssl/issues/19047
-        */
-        WARN("SM2 PKEY methods registration failed with OpenSSL 3.\n");
-        return NULL;
-#endif
-    }
-#endif /* QAT_OPENSSL_PROVIDER */
-    return _hidden_sm2_pmeth;
-}
-
-#ifdef ENABLE_QAT_SW_SM2
 void process_ecdsa_sm2_sign_reqs(mb_thread_data *tlv)
 {
     ecdsa_sm2_sign_op_data *ecdsa_sm2_sign_req_array[MULTIBUFF_BATCH] = {0};
@@ -390,8 +292,141 @@ void process_ecdsa_sm2_verify_reqs(mb_thread_data *tlv)
     DEBUG("Processed Final Request\n");
 }
 
+/* OpenSSL Softare implementation for synchronous requests,
+ * Since OpenSSL doesn't support single shot operation
+ * and it has to be digest and then sign, Whereas crypto_mb only
+ * supports single shot operation for performance reasons.
+ * Had to use this code here from OpenSSL as OpenSSL throws error
+ * (ONLY_ONESHOT_SUPPORTED) when doing EVP_DigestUpdate() from
+ * digest_custom if digestsign is registered from engine */
+int qat_sm2_compute_z_digest(uint8_t *out,
+                              const EVP_MD *digest,
+                              const uint8_t *id,
+                              const size_t id_len,
+                              const EC_KEY *key)
+{
+    int rc = 0;
+    const EC_GROUP *group = EC_KEY_get0_group(key);
+    BN_CTX *ctx = NULL;
+    EVP_MD_CTX *hash = NULL;
+    BIGNUM *p = NULL;
+    BIGNUM *a = NULL;
+    BIGNUM *b = NULL;
+    BIGNUM *xG = NULL;
+    BIGNUM *yG = NULL;
+    BIGNUM *xA = NULL;
+    BIGNUM *yA = NULL;
+    int p_bytes = 0;
+    uint8_t *buf = NULL;
+    uint16_t entl = 0;
+    uint8_t e_byte = 0;
+
+    hash = EVP_MD_CTX_new();
+    ctx = BN_CTX_secure_new();
+    BN_CTX_start(ctx);
+    if (hash == NULL || ctx == NULL) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_MALLOC_FAILURE);
+        WARN("Hash internal error\n");
+        goto done;
+    }
+
+    p = BN_CTX_get(ctx);
+    a = BN_CTX_get(ctx);
+    b = BN_CTX_get(ctx);
+    xG = BN_CTX_get(ctx);
+    yG = BN_CTX_get(ctx);
+    xA = BN_CTX_get(ctx);
+    yA = BN_CTX_get(ctx);
+    if (yA == NULL) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_MALLOC_FAILURE);
+        WARN("Hash internal error\n");
+        goto done;
+    }
+
+    if (!EVP_DigestInit(hash, digest)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
+        WARN("Hash internal error\n");
+        goto done;
+    }
+
+    /* Z = h(ENTL || ID || a || b || xG || yG || xA || yA) */
+
+    if (id_len >= (UINT16_MAX / 8)) {
+        /* too large */
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_ID_TOO_LARGE);
+        WARN("id_len too large\n");
+        goto done;
+    }
+
+    entl = (uint16_t)(8 * id_len);
+
+    e_byte = entl >> 8;
+    if (!EVP_DigestUpdate(hash, &e_byte, 1)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
+        WARN("EVP Digest Failure\n");
+        goto done;
+    }
+    e_byte = entl & 0xFF;
+    if (!EVP_DigestUpdate(hash, &e_byte, 1)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
+        WARN("EVP Digest Failure\n");
+        goto done;
+    }
+
+    if (id_len > 0 && !EVP_DigestUpdate(hash, id, id_len)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
+        WARN("EVP Digest Failure\n");
+        goto done;
+    }
+
+    if (!EC_GROUP_get_curve(group, p, a, b, ctx)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_EC_LIB);
+        WARN("EC Group get curve failed\n");
+        goto done;
+    }
+
+
+    p_bytes = BN_num_bytes(p);
+    buf = OPENSSL_zalloc(p_bytes);
+    if (buf == NULL) {
+        WARN("Malloc Failure\n");
+        goto done;
+    }
+
+    if (BN_bn2binpad(a, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || BN_bn2binpad(b, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || !EC_POINT_get_affine_coordinates(group,
+                                                EC_GROUP_get0_generator(group),
+                                                xG, yG, ctx)
+            || BN_bn2binpad(xG, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || BN_bn2binpad(yG, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || !EC_POINT_get_affine_coordinates(group,
+                                                EC_KEY_get0_public_key(key),
+                                                xA, yA, ctx)
+            || BN_bn2binpad(xA, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || BN_bn2binpad(yA, buf, p_bytes) < 0
+            || !EVP_DigestUpdate(hash, buf, p_bytes)
+            || !EVP_DigestFinal(hash, out, NULL)) {
+        QATerr(QAT_F_QAT_SM2_COMPUTE_Z_DIGEST, QAT_R_INTERNAL_ERROR);
+        WARN("EVP Digest Operation failure\n");
+        goto done;
+    }
+
+    rc = 1;
+ done:
+    OPENSSL_free(buf);
+    BN_CTX_free(ctx);
+    EVP_MD_CTX_free(hash);
+    return rc;
+}
+
 # ifndef QAT_OPENSSL_PROVIDER
-static int mb_sm2_init(EVP_PKEY_CTX *ctx)
+int mb_sm2_init(EVP_PKEY_CTX *ctx)
 {
     QAT_SM2_PKEY_CTX *smctx = NULL;
 
@@ -410,7 +445,7 @@ static int mb_sm2_init(EVP_PKEY_CTX *ctx)
     return 1;
 }
 
-static void mb_sm2_cleanup(EVP_PKEY_CTX *ctx)
+void mb_sm2_cleanup(EVP_PKEY_CTX *ctx)
 {
     QAT_SM2_PKEY_CTX *smctx = NULL;
 
@@ -430,7 +465,7 @@ static void mb_sm2_cleanup(EVP_PKEY_CTX *ctx)
     OPENSSL_free(smctx);
 }
 
-static int mb_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
+int mb_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
 {
     QAT_SM2_PKEY_CTX *smctx = (QAT_SM2_PKEY_CTX *)EVP_PKEY_CTX_get_data(ctx);
     EC_GROUP *group;
@@ -511,138 +546,6 @@ static int mb_sm2_ctrl(EVP_PKEY_CTX *ctx, int type, int p1, void *p2)
     }
 }
 
-/* OpenSSL Softare implementation for synchronous requests,
- * Since OpenSSL doesn't support single shot operation
- * and it has to be digest and then sign, Whereas crypto_mb only
- * supports single shot operation for performance reasons.
- * Had to use this code here from OpenSSL as OpenSSL throws error
- * (ONLY_ONESHOT_SUPPORTED) when doing EVP_DigestUpdate() from
- * digest_custom if digestsign is registered from engine */
-int ossl_sm2_compute_z_digest(uint8_t *out,
-                              const EVP_MD *digest,
-                              const uint8_t *id,
-                              const size_t id_len,
-                              const EC_KEY *key)
-{
-    int rc = 0;
-    const EC_GROUP *group = EC_KEY_get0_group(key);
-    BN_CTX *ctx = NULL;
-    EVP_MD_CTX *hash = NULL;
-    BIGNUM *p = NULL;
-    BIGNUM *a = NULL;
-    BIGNUM *b = NULL;
-    BIGNUM *xG = NULL;
-    BIGNUM *yG = NULL;
-    BIGNUM *xA = NULL;
-    BIGNUM *yA = NULL;
-    int p_bytes = 0;
-    uint8_t *buf = NULL;
-    uint16_t entl = 0;
-    uint8_t e_byte = 0;
-
-    hash = EVP_MD_CTX_new();
-    ctx = BN_CTX_secure_new();
-    BN_CTX_start(ctx);
-    if (hash == NULL || ctx == NULL) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_MALLOC_FAILURE);
-        WARN("Hash internal error\n");
-        goto done;
-    }
-
-    p = BN_CTX_get(ctx);
-    a = BN_CTX_get(ctx);
-    b = BN_CTX_get(ctx);
-    xG = BN_CTX_get(ctx);
-    yG = BN_CTX_get(ctx);
-    xA = BN_CTX_get(ctx);
-    yA = BN_CTX_get(ctx);
-
-    if (yA == NULL) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_MALLOC_FAILURE);
-        WARN("Hash internal error\n");
-        goto done;
-    }
-
-    if (!EVP_DigestInit(hash, digest)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
-        WARN("Hash internal error\n");
-        goto done;
-    }
-
-    /* Z = h(ENTL || ID || a || b || xG || yG || xA || yA) */
-
-    if (id_len >= (UINT16_MAX / 8)) {
-        /* too large */
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_ID_TOO_LARGE);
-        WARN("id_len too large\n");
-        goto done;
-    }
-
-    entl = (uint16_t)(8 * id_len);
-
-    e_byte = entl >> 8;
-    if (!EVP_DigestUpdate(hash, &e_byte, 1)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
-        WARN("EVP Digest Failure\n");
-        goto done;
-    }
-    e_byte = entl & 0xFF;
-    if (!EVP_DigestUpdate(hash, &e_byte, 1)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
-        WARN("EVP Digest Failure\n");
-        goto done;
-    }
-
-    if (id_len > 0 && !EVP_DigestUpdate(hash, id, id_len)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_EVP_LIB);
-        WARN("EVP Digest Failure\n");
-        goto done;
-    }
-
-    if (!EC_GROUP_get_curve(group, p, a, b, ctx)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_EC_LIB);
-        WARN("EC Group get curve failed\n");
-        goto done;
-    }
-
-    p_bytes = BN_num_bytes(p);
-    buf = OPENSSL_zalloc(p_bytes);
-    if (buf == NULL) {
-        WARN("Malloc Failure\n");
-        goto done;
-    }
-
-    if (BN_bn2binpad(a, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || BN_bn2binpad(b, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || !EC_POINT_get_affine_coordinates(group,
-                                                EC_GROUP_get0_generator(group),
-                                                xG, yG, ctx)
-            || BN_bn2binpad(xG, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || BN_bn2binpad(yG, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || !EC_POINT_get_affine_coordinates(group,
-                                                EC_KEY_get0_public_key(key),
-                                                xA, yA, ctx)
-            || BN_bn2binpad(xA, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || BN_bn2binpad(yA, buf, p_bytes) < 0
-            || !EVP_DigestUpdate(hash, buf, p_bytes)
-            || !EVP_DigestFinal(hash, out, NULL)) {
-        QATerr(QAT_F_OSSL_SM2_COMPUTE_Z_DIGEST, QAT_R_INTERNAL_ERROR);
-        WARN("EVP Digest Operation failure\n");
-        goto done;
-    }
-
-    rc = 1;
- done:
-    OPENSSL_free(buf);
-    BN_CTX_free(ctx);
-    EVP_MD_CTX_free(hash);
-    return rc;
-}
 
 static BIGNUM *sm2_compute_msg_hash(const EVP_MD *digest,
                                     const EC_KEY *key,
@@ -666,7 +569,7 @@ static BIGNUM *sm2_compute_msg_hash(const EVP_MD *digest,
         goto done;
     }
 
-    if (!ossl_sm2_compute_z_digest(z, digest, id, id_len, key)) {
+    if (!qat_sm2_compute_z_digest(z, digest, id, id_len, key)) {
         /* QATerr already called */
         goto done;
     }
@@ -691,14 +594,14 @@ static BIGNUM *sm2_compute_msg_hash(const EVP_MD *digest,
     return e;
 }
 
-static int mb_digest_custom(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx)
+int mb_digest_custom(EVP_PKEY_CTX *ctx, EVP_MD_CTX *mctx)
 {
 
     /* Do nothing as this is taken care in use_sw_method within
      * corresponding digestsign and digestverify function */
     return 1;
 }
-#endif
+# endif
 
 # ifdef QAT_OPENSSL_PROVIDER
 int mb_ecdsa_sm2_sign(QAT_PROV_SM2_CTX *smctx,
@@ -793,6 +696,13 @@ int mb_ecdsa_sm2_sign(EVP_MD_CTX *mctx,
         smctx->id_set = 1;
         smctx->id = (uint8_t*)OPENSSL_memdup(SM2_DEFAULT_USERID, SM2_DEFAULT_USERID_LEN);
         smctx->id_len = SM2_DEFAULT_USERID_LEN;
+    }
+# endif
+
+# if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (qat_openssl3_sm2_fallback == 1) {
+        DEBUG("- Switched to software mode\n");
+        goto use_sw_method;
     }
 # endif
 
@@ -1107,6 +1017,13 @@ int mb_ecdsa_sm2_verify(EVP_MD_CTX *mctx,
     }
 # endif
 
+# if defined(QAT_OPENSSL_3) && !defined(QAT_OPENSSL_PROVIDER)
+    if (qat_openssl3_sm2_fallback == 1) {
+        DEBUG("- Switched to software mode\n");
+        goto use_sw_method;
+    }
+# endif
+
     /* QAT SW initialization fail, switching to OpenSSL. */
     if (fallback_to_openssl)
         goto use_sw_method;
@@ -1316,4 +1233,4 @@ use_sw_method:
 # endif
 #endif /* QAT_OPENSSL_PROVIDER */
 }
-#endif
+#endif /*ENABLE_QAT_SW_SM2*/

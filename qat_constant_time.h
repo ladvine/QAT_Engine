@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -67,6 +67,26 @@
 extern "C" {
 #endif
 
+static inline unsigned int value_barrier(unsigned int a)
+{
+    volatile unsigned int r = a;
+    return r;
+}
+
+static inline unsigned int qat_constant_time_select(unsigned int mask,
+                                                     unsigned int a,
+                                                     unsigned int b)
+{
+    return (value_barrier(mask) & a) | (value_barrier(~mask) & b);
+}
+
+static inline unsigned char qat_constant_time_select_8(unsigned char mask,
+                                                        unsigned char a,
+                                                        unsigned char b)
+{
+    return (unsigned char)qat_constant_time_select(mask, a, b);
+}
+
 static inline unsigned int qat_constant_time_msb(unsigned int a)
 {
     return 0 - (a >> (sizeof(a) * 8 - 1));
@@ -99,6 +119,35 @@ static inline unsigned int qat_constant_time_eq(unsigned int a,
                                                 unsigned int b)
 {
     return qat_constant_time_is_zero(a ^ b);
+}
+
+static inline unsigned char qat_constant_time_is_zero_8(unsigned int a)
+{
+    return (unsigned char)qat_constant_time_is_zero(a);
+}
+
+static inline size_t value_barrier_s(size_t a)
+{
+    volatile size_t r = a;
+    return r;
+}
+
+static inline size_t qat_constant_time_select_s(size_t mask,
+                                                size_t a,
+                                                size_t b)
+{
+    return (value_barrier_s(mask) & a) | (value_barrier_s(~mask) & b);
+}
+
+static inline size_t qat_constant_time_msb_s(size_t a)
+{
+    return 0 - (a >> (sizeof(a) * 8 - 1));
+}
+
+static inline int qat_constant_time_select_int(unsigned int mask, int a,
+                                               int b)
+{
+    return (int)qat_constant_time_select(mask, (unsigned)(a), (unsigned)(b));
 }
 
 #ifdef __cplusplus

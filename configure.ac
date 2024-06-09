@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.68])
-AC_INIT([qatengine], [1.2.0], [])
+AC_INIT([qatengine], [1.6.0], [])
 AC_CONFIG_SRCDIR([config.h.in])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([.])
@@ -84,10 +84,20 @@ AC_ARG_ENABLE(qat_hw_sm4_cbc,
                              [Enable qat_hw SM4-CBC acceleration]))
 AC_SUBST(enable_qat_hw_sm4_cbc)
 
+AC_ARG_ENABLE(qat_hw_sm2,
+              AS_HELP_STRING([--enable-qat_hw_sm2],
+                             [Enable qat_hw SM2 acceleration]))
+AC_SUBST(enable_qat_hw_sm2)
+
 AC_ARG_ENABLE(qat_hw_sm3,
               AS_HELP_STRING([--enable-qat_hw_sm3],
                              [Enable qat_hw SM3 acceleration]))
 AC_SUBST(enable_qat_hw_sm3)
+
+AC_ARG_ENABLE(qat_hw_ccm,
+              AS_HELP_STRING([--disable-qat_hw_ccm],
+                             [Disable qat_hw AES-CCM acceleration]))
+AC_SUBST(enable_qat_hw_ccm)
 
 AC_ARG_ENABLE(qat_sw_gcm,
               AS_HELP_STRING([--disable-qat_sw_gcm],
@@ -266,11 +276,6 @@ AC_ARG_ENABLE(qat_hw_multi_thread,
                            [Enable using a multi threaded version of the user space part of the supplied memory driver. Please see the documentation on limitations of using this option]))
 AC_SUBST(enable_qat_hw_multi_thread)
 
-AC_ARG_ENABLE(qat_hw_set_inst_thread,
-              AS_HELP_STRING([--enable-qat_hw_set_inst_thread],
-                             [Enables mapping the thread to a specific instance]))
-AC_SUBST(enable_qat_hw_set_inst_thread)
-
 AC_ARG_ENABLE(qat_hw_lenstra_protection,
               AS_HELP_STRING([--disable-qat_hw_lenstra_protection],
                              [Disable protection against Lenstra attack]))
@@ -305,21 +310,32 @@ AC_ARG_ENABLE(qat_insecure_algorithms,
                              [Enable insecure algorithms (DSA, DH, SHA1, SHA3-224, EC <256 & RSA<2048]))
 AC_SUBST(enable_qat_insecure_algorithms)
 
+AC_ARG_ENABLE(qat_hw_kpt,
+              AS_HELP_STRING([--enable-qat_hw_kpt],
+                             [Enable QAT HW Key Protection technology(KPT) support]))
+AC_SUBST(enable_qat_hw_kpt)
+
 #Default library name is qatengine
 AC_SUBST([LIBQATNAME], "qatengine")
 
 AC_CHECK_FILE(${qat_hw_dir_prefix}/include/qat/icp_sal_versions.h,
 	      [with_icp_sal_versions_h=yes],
 	      [with_icp_sal_versions_h=no])
-if test "x$with_icp_sal_versions_h" = "xyes"
+if test "x$with_icp_sal_versions_h" = "xyes" -a "x$enable_qat_hw" != "xno"
 then
-  if test `grep "define SAL_INFO2_DRIVER_SW_VERSION_TYPE \"in-tree\"" ${qat_hw_dir_prefix}/include/qat/icp_sal_versions.h | wc -l` = "1"
+  if grep "define SAL_INFO2_DRIVER_SW_VERSION_TYPE \"in-tree\"" ${qat_hw_dir_prefix}/include/qat/icp_sal_versions.h
   then
-    AC_SUBST([cflags_qat_hw_intree], ["-DQAT_HW_INTREE -DQAT_HW_DISABLE_NONZERO_MEMFREE"])
+    AC_SUBST([cflags_qat_hw_intree], ["-DQAT_HW_INTREE"])
     AC_SUBST([with_qat_hw_dir], ["${qat_hw_dir_prefix}"])
-    AC_MSG_NOTICE([QAT intree driver using QATlib in ${with_qat_hw_dir}])
+    AC_MSG_NOTICE([QAT in-tree driver using QATlib in ${with_qat_hw_dir}])
+  else
+    AC_SUBST([cflags_qat_hw_intree], ["-DQAT_HW_FBSD_INTREE"])
+    AC_SUBST([with_qat_hw_dir], ["${qat_hw_dir_prefix}"])
+    AC_MSG_NOTICE([QAT in-tree driver using FBSD QATlib in ${with_qat_hw_dir}])
   fi
 fi
+
+AM_CONDITIONAL([QAT_HW_INTREE], [test "x$cflags_qat_hw_intree" != "x"])
 
 # ERROR message if mandatory options are not provided
 if test "x$cflags_qat_hw_intree" = "x"
@@ -339,31 +355,27 @@ then
   #BoringSSL from Source
   if test -f $with_openssl_install_dir/include/openssl/base.h
   then
-    if test "`grep "define BORINGSSL_API_VERSION" $with_openssl_install_dir/include/openssl/base.h | wc -l`" = "1"
+    if grep "define BORINGSSL_API_VERSION" $with_openssl_install_dir/include/openssl/base.h
     then
       AC_MSG_NOTICE([Build QAT Engine against BoringSSL])
       AC_SUBST([cflags_boringssl], ["-DQAT_BORINGSSL"])
       AC_CHECK_FILE(${with_openssl_install_dir}/lib/libcrypto.so,
                    [AC_SUBST([QAT_BORINGSSL_LIB], ["-Wl,-rpath,\$(with_openssl_install_dir)/lib -L\$(with_openssl_install_dir)/lib -ldecrepit -lcrypto -lssl"])],
-                   [AC_MSG_ERROR([BoringSSL libaries not found in the path $(with_openssl_install_dir)/lib !])])
+                   [AC_MSG_ERROR([BoringSSL libraries not found in the path $(with_openssl_install_dir)/lib !])])
       AS_IF([test -d "$with_openssl_install_dir/crypto"], [AC_SUBST([cflags_boringssl], ["-DQAT_BORINGSSL -DBSSL_SOURCE"])])
       AC_SUBST([with_openssl_dir], [""]) #Err files are updated manually for BoringSSL
       AC_SUBST([LIBQATNAME], "libqatengine")
-      CFLAGS_BACK="${CFLAGS}"
-      CFLAGS="-I${with_openssl_install_dir}/include/ -I${with_openssl_install_dir}/include/openssl/ ${CFLAGS}"
-      AC_CHECK_TYPE([struct evp_pkey_st], [], [AC_MSG_ERROR([need specified version for BoringSSL commit:15596efa5f])], [
-                     AC_INCLUDES_DEFAULT
-                     #include <openssl/evp.h>])
-      AC_CHECK_MEMBERS([struct evp_pkey_st.references, struct evp_pkey_st.type, struct evp_pkey_st.pkey.ptr, struct evp_pkey_st.pkey.rsa,
-                        struct evp_pkey_st.pkey.dsa, struct evp_pkey_st.pkey.dh, struct evp_pkey_st.pkey.ec, struct evp_pkey_st.ameth],
-                        [], [need specified version for BoringSSL commit:15596efa5f], [#include <openssl/evp.h>])
-      CFLAGS="${CFLAGS_BACK}"
     fi
   else
     ac_default_prefix=$with_openssl_install_dir
-    #OPENSSL 3.0
-    if test "`grep "define OPENSSL_VERSION_MAJOR" $with_openssl_install_dir/include/openssl/opensslv.h | awk '{print $4}'`" = "3"
+    if grep "define OPENSSL_VERSION_NUMBER  0x1010"  $with_openssl_install_dir/include/openssl/opensslv.h
     then
+      #OPENSSL 1.1.1
+      AC_MSG_NOTICE([Build QAT engine against OpenSSL 1.1.1])
+      libdir="\$(with_openssl_install_dir)/lib/engines-1.1"
+      AC_SUBST([OPENSSL_LIB], ["-Wl,-rpath,\$(with_openssl_install_dir)/lib -L\$(with_openssl_install_dir)/lib -lcrypto"])
+    else
+      #OPENSSL 3.0
       if test "x$enable_qat_provider" = "xyes"
       then
         AC_MSG_NOTICE([Build QAT Provider against OpenSSL 3.0])
@@ -377,11 +389,6 @@ then
         AC_SUBST([cflags_openssl_3], ["-DQAT_OPENSSL_3 -DOPENSSL_SUPPRESS_DEPRECATED"])
         AC_SUBST([OPENSSL_LIB], ["-Wl,-rpath,\$(with_openssl_install_dir)/\$(openssl3_lib) -L\$(with_openssl_install_dir)/\$(openssl3_lib) -lcrypto"])
       fi
-    else
-      #OPENSSL 1.1.1
-      AC_MSG_NOTICE([Build QAT engine against OpenSSL 1.1.1])
-      libdir="\$(with_openssl_install_dir)/lib/engines-1.1"
-      AC_SUBST([OPENSSL_LIB], ["-Wl,-rpath,\$(with_openssl_install_dir)/lib -L\$(with_openssl_install_dir)/lib -lcrypto"])
     fi
   fi
   AC_SUBST([includes_openssl], ["-I\$(with_openssl_install_dir)/include"])
@@ -391,16 +398,18 @@ else
   AS_IF([test "x$PKGCONFIG" = "x"], [AC_MSG_ERROR(pkg-config not found.)], )
   libdir="`pkg-config --variable=enginesdir libcrypto`"
   includes_openssl="`pkg-config --variable=includedir libcrypto`"
-  if test "`grep "define OPENSSL_VERSION_MAJOR" $includes_openssl/openssl/opensslv.h | awk '{print $4}'`" = "3"
+  if grep "define OPENSSL_VERSION_NUMBER  0x1010" $includes_openssl/openssl/opensslv.h
   then
+      AC_MSG_NOTICE([Build QAT Engine against system OpenSSL 1.1.1])
+  else
     if test "x$enable_qat_provider" = "xyes"
     then
-      AC_MSG_NOTICE([Build QAT Provider against OpenSSL 3.0])
+      AC_MSG_NOTICE([Build QAT Provider against system OpenSSL 3.0])
       AC_SUBST([cflags_openssl_3], ["-DQAT_OPENSSL_3 -DOPENSSL_SUPPRESS_DEPRECATED -DQAT_OPENSSL_PROVIDER"])
       openssl3_lib="`pkg-config --variable=libdir libcrypto`"
       libdir="\$(openssl3_lib)/ossl-modules"
     else
-      AC_MSG_NOTICE([Build QAT Engine against OpenSSL 3.0])
+      AC_MSG_NOTICE([Build QAT Engine against system OpenSSL 3.0])
       AC_SUBST([cflags_openssl_3], ["-DQAT_OPENSSL_3 -DOPENSSL_SUPPRESS_DEPRECATED"])
       libdir="`pkg-config --variable=enginesdir libcrypto`"
     fi
@@ -413,6 +422,7 @@ fi
 AM_CONDITIONAL([QAT_OPENSSL_3], [test "x$cflags_openssl_3" != "x"])
 AM_CONDITIONAL([QAT_PROVIDER], [test "x$enable_qat_provider" = "xyes"])
 AM_CONDITIONAL([QAT_BORINGSSL], [test "x$cflags_boringssl" != "x"])
+AM_CONDITIONAL([ENABLE_QAT_HW_KPT], [test "x$enable_qat_hw_kpt" = "xyes"])
 
 # qat_hw_dir configured, enable qat_hw
 if test "x$with_qat_hw_dir" != "x"
@@ -428,6 +438,11 @@ then
   fi
 fi
 AM_CONDITIONAL([QAT_HW], [test "x$cflags_qat_hw" != "x"])
+case "$host_os" in
+linux*)
+    AS_IF([test `lspci -vnd 8086: | grep -c 4940` != "0"], [AC_SUBST([enable_qat20_oot], ["-DQAT20_OOT"])])
+esac
+AM_CONDITIONAL([QAT_4XXX], [test "x$enable_qat20_oot" != "x"])
 
 # QAT_SW acceleration enabled
 if test "x$enable_qat_sw" = "xyes"
@@ -437,18 +452,16 @@ then
   then
     AC_MSG_NOTICE([QAT_SW enabled for PKE with crypto_mb from user provided path])
     AC_SUBST([cflags_qat_sw], ["-DQAT_SW"])
-    AC_SUBST([includes_qat_sw_crypto_mb], ["-I\$(with_qat_sw_crypto_mb_install_dir)/include"])
-    AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-Wl,-rpath,\$(with_qat_sw_crypto_mb_install_dir)/lib -L\$(with_qat_sw_crypto_mb_install_dir)/lib -lcrypto_mb"])
+    AC_SUBST([includes_qat_sw_crypto_mb], ["-I\${with_qat_sw_crypto_mb_install_dir}/include"])
+    AC_CHECK_FILE(${with_qat_sw_crypto_mb_install_dir}/lib/libcrypto_mb.so,
+                 [AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-Wl,-rpath,${with_qat_sw_crypto_mb_install_dir}/lib -L\${with_qat_sw_crypto_mb_install_dir}/lib -lcrypto_mb"])],
+                 [AC_MSG_ERROR([$with_qat_sw_crypto_mb_install_dir/lib/libcrypto_mb.so not found. Install it and try again.])])
   else
-    AC_CHECK_LIB(crypto_mb, mbx_getversion, [AC_MSG_NOTICE([QAT_SW enabled for PKE with crypto_mb from standard path])], [AC_MSG_NOTICE([crypto_mb Library not found, QAT_SW disabled for PKE algorithms])], [])
-    if test "x$ac_cv_lib_crypto_mb_mbx_getversion" = "xyes"
-    then
-      AC_SUBST([cflags_qat_sw], ["-DQAT_SW"])
-      AC_SUBST([includes_qat_sw_crypto_mb], ["-I/usr/local/include"])
-      AC_CHECK_FILE(/usr/local/lib/libcrypto_mb.so,
-                   [AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-Wl,-rpath,/usr/local/lib -L/usr/local/lib -lcrypto_mb"])],
-                   [AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-lcrypto_mb"])])
-    fi
+    AC_SUBST([cflags_qat_sw], ["-DQAT_SW"])
+    AC_SUBST([includes_qat_sw_crypto_mb], ["-I/usr/local/include -I/usr/include"])
+    AC_CHECK_FILE(/usr/local/lib/libcrypto_mb.so,
+                 [AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-Wl,-rpath,/usr/local/lib -L/usr/local/lib -lcrypto_mb"])],
+                 [AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-lcrypto_mb"])])
   fi
 
 #IPSEC_MB install path provided
@@ -456,20 +469,14 @@ then
   then
     AC_MSG_NOTICE([QAT_SW for AES-GCM enabled with IPsec_mb library from the path provided])
     AC_SUBST([cflags_qat_sw_ipsec], ["-DQAT_SW_IPSEC"])
-    AC_SUBST([includes_qat_sw_ipsec_mb], ["-I\$(with_qat_sw_ipsec_mb_install_dir)/include"])
-    AC_SUBST([QAT_SW_IPSEC_MB_LIB], ["-Wl,-rpath,\$(with_qat_sw_ipsec_mb_install_dir)/lib -L\$(with_qat_sw_ipsec_mb_install_dir)/lib -lIPSec_MB"])
+    AC_SUBST([includes_qat_sw_ipsec_mb], ["-I\${with_qat_sw_ipsec_mb_install_dir}/include"])
+    AC_CHECK_FILE(${with_qat_sw_ipsec_mb_install_dir}/lib/libIPSec_MB.so,
+                 [AC_SUBST([QAT_SW_IPSEC_MB_LIB], ["-Wl,-rpath,${with_qat_sw_ipsec_mb_install_dir}/lib -L\${with_qat_sw_ipsec_mb_install_dir}/lib -lIPSec_MB"])],
+                 [AC_MSG_ERROR([$with_qat_sw_ipsec_mb_install_dir/lib/libIPSec_MB.so not found. Install it and try again.])])
   else
-    AC_CHECK_LIB(IPSec_MB, imb_get_version, [AC_MSG_NOTICE([QAT_SW for AES-GCM enabled with IPsec_mb library from standard path])], [AC_MSG_NOTICE([IPSec_MB Library not found, QAT_SW GCM disabled])], [])
-    if test "x$ac_cv_lib_IPSec_MB_imb_get_version" = "xyes"
-    then
-      AC_SUBST([cflags_qat_sw_ipsec], ["-DQAT_SW_IPSEC"])
-      AC_SUBST([includes_qat_sw_ipsec_mb], ["-I/usr/include"])
-      AC_SUBST([QAT_SW_IPSEC_MB_LIB], ["-lIPSec_MB"])
-    fi
-  fi
-  if test "x$cflags_qat_sw" = "x" -a "x$cflags_qat_sw_ipsec" = "x"
-  then
-    AC_MSG_ERROR([Both crypto_mb & IPSec_MB libraries not found in the default install dir, Install the dependant libraries or provide path via --with-qat_sw_crypto_mb_install_dir & --with-qat_sw_ipsec_mb_install_dir if installed other than the default location])
+    AC_SUBST([cflags_qat_sw_ipsec], ["-DQAT_SW_IPSEC"])
+    AC_SUBST([includes_qat_sw_ipsec_mb], ["-I/usr/include"])
+    AC_SUBST([QAT_SW_IPSEC_MB_LIB], ["-lIPSec_MB"])
   fi
 fi
 AM_CONDITIONAL([QAT_SW], [test "x$cflags_qat_sw" != "x"])
@@ -501,6 +508,8 @@ then
     AC_SUBST([enable_qat_hw_hkdf], ["no"])
     AC_SUBST([enable_qat_hw_ecx], ["no"])
     AC_SUBST([enable_qat_hw_gcm], ["no"])
+    AC_SUBST([enable_qat_hw_sm2], ["no"])
+    AC_SUBST([enable_qat_hw_ccm], ["no"])
   fi
   if test "x$cflags_qat_sw" != "x"
   then
@@ -513,6 +522,11 @@ then
     AC_SUBST([enable_qat_sw_heuristic_timeout], ["no"])
     AC_SUBST([enable_qat_sw_sha2], ["no"])
   fi
+fi
+
+if test "x$enable_qat_hw_kpt" = "xyes" -a "x$cflags_qat_hw" != "x"
+then
+  AC_SUBST([includes_kpt_lib], ["-Ikpt/lib"])
 fi
 
 # Compiler security flags
@@ -561,6 +575,12 @@ then
         [cflags_qat_hw="${cflags_qat_hw} -DENABLE_QAT_HW_CHACHAPOLY"; AC_MSG_NOTICE([Accelerating CHACHA-POLY to Hardware])])
   AS_IF([test "x$enable_qat_hw_sm4_cbc" = "xyes"], 
         [cflags_qat_hw="${cflags_qat_hw} -DENABLE_QAT_HW_SM4_CBC"; AC_MSG_NOTICE([Accelerating SM4-CBC to Hardware])])
+  AS_IF([test "x$enable_qat_hw_sm2" = "xyes"],
+        [cflags_qat_hw="${cflags_qat_hw} -DENABLE_QAT_HW_SM2"; AC_MSG_NOTICE([Accelerating SM2 to Hardware])])
+  AS_IF([test "x$enable_qat_hw_ccm" != "xno"],
+        [cflags_qat_hw="${cflags_qat_hw} -DENABLE_QAT_HW_CCM"; AC_MSG_NOTICE([Accelerating AES-CCM to Hardware])])
+  AS_IF([test "x$enable_qat_hw_kpt" = "xyes"],
+        [cflags_qat_hw="${cflags_qat_hw} -DENABLE_QAT_HW_KPT"; AC_MSG_NOTICE([QAT_HW KPT Support enabled])])
 fi
 
 # Enable QAT_SW Algorithms based on enable/disable Flags
@@ -602,6 +622,31 @@ then
     then
       AC_MSG_ERROR(Co-existence not supported by SM3)
     fi
+fi
+
+if test "x$cflags_qat_hw" != "x"
+then
+    AC_CHECK_FILE(${with_openssl_install_dir}/include/openssl/ossl_typ.h,
+              [with_kdf_support_h=yes],
+              [with_kdf_support_h=no])
+    if test "x$with_kdf_support_h" = "xyes"
+    then
+        if grep "struct evp_kdf_ctx_st EVP_KDF_CTX" $with_openssl_install_dir/include/openssl/ossl_typ.h
+        then
+          AC_SUBST([cflags_qat_hw], ["${cflags_qat_hw} -DQAT_KDF_SUPPORT"])
+          AC_MSG_NOTICE([KDF structure support available])
+        fi
+    fi
+fi
+#System OpenSSL
+if test "x$with_openssl_install_dir" = "x"
+then
+  AC_CHECK_LIB([crypto],[EVP_sm3],[with_sm3_support_h=yes],[with_sm3_support_h=no])
+  if test "x$with_sm3_support_h" = "xno"
+  then
+    AC_SUBST([cflags_qat_hw], ["${cflags_qat_hw} -DOPENSSL_NO_SM2_SM3"])
+    AC_MSG_NOTICE([SM3 support not available in system OpenSSL])
+  fi
 fi
 
 #Enable additional QAT_HW & QAT_SW flags
@@ -740,8 +785,16 @@ fi
 # qatlib Intree uses different library name
 if test "x$cflags_qat_hw_intree" != "x"
 then
-  AC_SUBST([DRIVER], ["qat"])
-  AC_SUBST([USDM], ["usdm"])
+  case "$host_os" in
+  freebsd*)
+      AC_SUBST([DRIVER], ["qat_s"])
+      AC_SUBST([USDM], ["usdm_drv_s"])
+      ;;
+  *)
+      AC_SUBST([DRIVER], ["qat"])
+      AC_SUBST([USDM], ["usdm"])
+      ;;
+  esac
 else
   AC_SUBST([DRIVER], ["qat_s"])
   AC_SUBST([USDM], ["usdm_drv_s"])
@@ -779,14 +832,40 @@ then
   fi
 fi
 
-# Output files from the configure
-AC_CONFIG_FILES([Makefile])
-AC_OUTPUT
-
-echo "==========================================="
+echo "==============================================================================="
 echo "Enabled Algorithms and Additional Flags"
-echo "==========================================="
+echo "==============================================================================="
 echo "QAT_HW ALGORITHMS :" [$cflags_qat_hw]
 echo "QAT_SW ALGORITHMS :" [$cflags_qat_sw]
 echo "ADDITIONAL FLAGS  :" [$cflags_common $cflags_openssl_3 $cflags_boringssl]
-echo "==========================================="
+if test "x$cflags_qat_hw" != "x"
+then
+  if test "x$cflags_qat_hw_intree" = "x"
+  then
+  AC_CHECK_FILE(${with_qat_hw_dir}/build/libqat_s.so, [],
+                [echo "QAT_HW Driver library not found in $with_qat_hw_dir/build. Install it & try again or proceed with 'make depend' target to install dependencies"])
+  fi
+fi
+if test "x$cflags_qat_sw" != "x"
+then
+  if test "x$with_qat_sw_crypto_mb_install_dir" = "x"
+  then
+    AC_CHECK_LIB(crypto_mb, mbx_getversion)
+    AC_CHECK_FILE(/usr/local/lib/libcrypto_mb.so)
+    if test "x$ac_cv_file__usr_local_lib_libcrypto_mb_so" != "xyes" -a "x$ac_cv_lib_crypto_mb_mbx_getversion" != "xyes"
+    then
+      echo "libcrypto_mb.so not found in /usr/local/lib or in system default. Install it & try again or proceed with 'make depend' target to install dependencies"
+      # Setting it for make depend target
+      AC_SUBST([QAT_SW_CRYPTO_MB_LIB], ["-Wl,-rpath,/usr/local/lib -L/usr/local/lib -lcrypto_mb"])
+    fi
+  fi
+  if test "x$with_qat_sw_ipsec_mb_install_dir" = "x"
+  then
+    AC_CHECK_LIB(IPSec_MB, imb_get_version, [], [echo "libIPsec_MB.so not found in default path. Install it & try again or proceed with 'make depend' target to install dependencies"])
+  fi
+fi
+echo "==============================================================================="
+
+# Output files from the configure
+AC_CONFIG_FILES([Makefile])
+AC_OUTPUT

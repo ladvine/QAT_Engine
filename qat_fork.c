@@ -3,7 +3,7 @@
  *
  *   BSD LICENSE
  *
- *   Copyright(c) 2016-2023 Intel Corporation.
+ *   Copyright(c) 2016-2024 Intel Corporation.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
 /*****************************************************************************
  * @file e_qat.c
  *
- * This file provides an implementaion for fork in QAT engine
+ * This file provides an implementation for fork in QAT engine
  *
  *****************************************************************************/
 
@@ -73,12 +73,6 @@
 
 /* QAT includes */
 #ifdef QAT_HW
-# ifdef USE_QAT_CONTIG_MEM
-#  include "qae_mem_utils.h"
-# endif
-# ifdef USE_USDM_MEM
-#  include "qat_hw_usdm_inf.h"
-# endif
 # include "cpa.h"
 # include "cpa_types.h"
 
@@ -259,4 +253,16 @@ int qat_set_instance_for_thread(long instanceNum)
     enable_instance_for_thread = 1;
     return 1;
 }
+
+/* Wrapper for memory Allocation to use pinned contiguous memory or application memory
+ * based on instance's SVM or contiguous mem capability  */
+void *qat_mem_alloc(size_t memsize, int inst_mem_type, const char *file, int line)
+{
+    if (inst_mem_type == QAT_INSTANCE_SVM)
+        return OPENSSL_zalloc(memsize);
+    else
+        return qaeCryptoMemAlloc(memsize, file, line);
+}
+
+
 #endif
